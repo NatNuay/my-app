@@ -3,7 +3,7 @@
 //
 // แนวคิด: ท่อนฮุคคือท่อนที่เนื้อเพลงวนกลับมาซ้ำ 2-3 รอบ ท่าเด็ดของเพลงส่วนใหญ่อยู่ในท่อนนี้
 //  1) ดึงเนื้อเพลงที่มีเวลากำกับ (LRC) ของเพลงที่ตรงกับคลิป แล้วหาบล็อกของบรรทัดที่ซ้ำกัน
-//  2) จับคู่เวลาของเพลงกับคลิปได้เมื่อความยาวใกล้กันเท่านั้น ไม่ตรงก็ไม่แสดงท่อน (ไม่เดา)
+//  2) ถ้าความยาวต่างกัน ต้องมีจุดอ้างอิงที่ผู้ใช้ยืนยัน หรือให้ผู้ใช้ปรับเวลาเอง (ไม่เดาจากความยาว)
 //  3) คอมเมนต์ที่มีไทม์สแตมป์ใช้เป็นแค่ตัวยืนยัน ไม่ได้เป็นตัวสร้างท่อนเอง
 //
 // ข้อจำกัดที่ต้องรู้: ฮุคไม่ใช่ท่อนไวรัลเสมอไป (ท่าอาจเปลี่ยนในแต่ละรอบ หรือท่อนเด็ดอาจเป็นช่วงดนตรีล้วนที่ไม่มีเนื้อ)
@@ -25,6 +25,10 @@ export interface HighlightsResponse {
   /** เหตุผลที่ไม่มีท่อน: tutorial | aerobic | not-dance-along | duration | not-found | no-lyrics | duration-mismatch | no-chorus */
   reason?: string;
   segments: AutoSegment[];
+  source?: "chapters" | "comments" | "lyrics";
+  appliedOffset?: number;
+  /** เวลาตามเพลง ยังไม่ใช่เวลาคลิป ต้องให้ผู้ใช้ยืนยันจุดเริ่มเพลงก่อน */
+  alignment?: { songDuration: number; clipDuration: number; firstChorusStart: number };
 }
 
 export interface CommentInput {
@@ -58,6 +62,7 @@ export interface LrclibRecord {
 
 // ---------- ค่าที่ปรับจูนได้ ----------
 export const DURATION_TOLERANCE_SEC = 4; // ความยาวเพลงกับคลิปต่างกันได้ไม่เกินนี้ ถึงจะถือว่าเวลาตรงกัน
+const PICKUP_WINDOW_SEC = 3; // ขยายคำขึ้นต้นสั้น ๆ ที่มีอีกรอบรองรับ ไม่ลากย้อนเข้า pre-chorus
 const MIN_CHORUS_SEC = 10;
 const MAX_CHORUS_SEC = 40;
 const MERGE_GAP_SEC = 3; // บรรทัดฮุคที่ซ้ำติดกันห่างไม่เกินนี้ นับเป็นรอบเดียว
@@ -192,7 +197,7 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
   if (n < 6) return [];
   const norm = lines.map((l) => normalizeLine(l.text));
   const info = norm.map(isInformative);
-  const same = (a: number, b: number) => a >= 0 && b >= 0 && a < n && b < n && info[a] && info[b] && norm[a] === norm[b];
+  const same = (a: number, b: number) => a >= 0 && b >= 0 && a < n && b < n && norm[a].length > 0 && norm[a] === norm[b];
 
   const seen = new Set<string>();
   let best: { score: number; occ: Occurrence[] } | null = null;
@@ -202,8 +207,8 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
       if (!same(i, j) || same(i - 1, j - 1)) continue; // ต้องเป็นจุดเริ่มของบล็อกที่ซ้ำ
       let run = 0;
       while (i + run < j && same(i + run, j + run)) run++; // ไม่ให้บล็อกซ้อนทับตัวเอง
-      if (run === 0) continue;
-      const key = `${norm[i]}|${run}`;
+      if (run < 2 || info.slice(i, i + run).filter(Boolean).length < 2) continue;
+      const key = JSON.stringify(norm.slice(i, i + run));
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -224,24 +229,19 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
       }
       if (starts.length < 2) continue;
 
-      // ขยายแต่ละรอบต่อไปตราบที่บรรทัดถัดไปตรงกับอีกรอบหนึ่ง แล้วใช้ความยาวสูงสุดกับทุกรอบ
-      // (รอบสุดท้ายของเพลงมักเปลี่ยนท้ายท่อน แต่ยังเป็นท่อนฮุคเดียวกัน)
-      const limitOf = (idx: number) => (idx + 1 < starts.length ? starts[idx + 1] - starts[idx] : n - starts[idx]);
-      let L = run;
-      starts.forEach((a, idx) => {
-        let l = run;
-        while (l < limitOf(idx) && starts.some((b) => b !== a && same(a + l, b + l))) l++;
-        L = Math.max(L, l);
+      // คำสั้นยังเป็นส่วนหนึ่งของบล็อก แต่ไม่บังคับทุกรอบให้ยาวเท่ารอบที่ยาวที่สุด
+      // ขยายด้านหน้าถ้ามีอย่างน้อยอีกรอบรองรับ (รอบสุดท้ายอาจตัดคำขึ้นต้นออก)
+      const raw: Occurrence[] = starts.map((a) => {
+        let first = a;
+        while (first > 0 && starts.some((b) => b !== a && same(first - 1, b - (a - first) - 1)) &&
+          lines[a].t - lines[first - 1].t <= PICKUP_WINDOW_SEC) first--;
+        const start = lines[first].t;
+        const endIdx = a + run;
+        const end = endIdx < n ? lines[endIdx].t : lines[n - 1].t + 4;
+        // ไม่สร้างความยาวขั้นต่ำด้วยการลากเข้า verse ที่ไม่มีหลักฐานการซ้ำ
+        return { start, end: Math.min(end, start + MAX_CHORUS_SEC) };
       });
-
-      const raw: Occurrence[] = starts.map((a, idx) => {
-        const len = Math.min(L, limitOf(idx));
-        const start = lines[a].t;
-        const endIdx = a + len;
-        let end = endIdx < n ? lines[endIdx].t : lines[n - 1].t + 4;
-        end = Math.min(Math.max(end, start + MIN_CHORUS_SEC), start + MAX_CHORUS_SEC);
-        return { start, end };
-      });
+      if (raw.some((o) => o.end - o.start < MIN_CHORUS_SEC)) continue;
 
       // รวมรอบที่ติดกัน (เช่น บรรทัดฮุคเดียวร้องซ้ำต่อกัน) ให้เป็นรอบเดียว
       const occ: Occurrence[] = [];
@@ -252,7 +252,7 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
       }
       if (occ.length < 2 || occ.length > MAX_OCCURRENCES) continue;
 
-      const score = Math.min(occ.length, 4) * 100 + Math.min(occ[0].end - occ[0].start, 30);
+      const score = Math.min(occ.length, 4) * 30 + occ.reduce((sum, o) => sum + Math.min(o.end - o.start, MAX_CHORUS_SEC), 0) / occ.length;
       if (!best || score > best.score) best = { score, occ };
     }
   }
@@ -272,12 +272,14 @@ function containsName(haystack: string, needle: string): boolean {
 
 export type LyricsMatch =
   | { status: "ok"; record: LrclibRecord; lines: LyricLine[] }
+  | { status: "alignment"; record: LrclibRecord; lines: LyricLine[] }
   | { status: "mismatch" } // เจอเพลงแต่ความยาวไม่ตรงกับคลิป
   | { status: "none" };
 
 /**
  * เลือกเนื้อเพลงที่ตรงกับคลิปที่สุดจากผลค้นหา: ชื่อเพลงต้องอยู่ในชื่อคลิป, ศิลปินต้องอยู่ในชื่อคลิป/ช่อง/แท็ก
- * (หรือความยาวตรงกันภายใน 2 วินาที) และความยาวเพลงต้องใกล้คลิปภายใน DURATION_TOLERANCE_SEC
+ * (หรือความยาวตรงกันภายใน 2 วินาที) ความยาวต่างเล็กน้อยจับเวลาอัตโนมัติ
+ * ถ้าต่างเกิน tolerance แต่ไม่เกิน 120 วินาทีและยืนยันศิลปินได้ ให้ส่งกลับเพื่อขอจัดเวลา
  */
 export function matchLyrics(
   records: LrclibRecord[],
@@ -289,9 +291,10 @@ export function matchLyrics(
   const extra = normalizeForMatch(`${clipTitle} ${extraText}`);
   let nameMatched = false;
   let best: { record: LrclibRecord; delta: number } | null = null;
+  let unaligned: { record: LrclibRecord; delta: number } | null = null;
 
   for (const rec of records) {
-    if (!rec.syncedLyrics || rec.instrumental) continue;
+    if (!rec.syncedLyrics || rec.instrumental || !Number.isFinite(rec.duration) || rec.duration <= 0) continue;
     const track = normalizeForMatch(rec.trackName);
     if (!containsName(title, track)) continue;
 
@@ -303,12 +306,17 @@ export function matchLyrics(
     if (!artistOk && delta > 2) continue;
 
     nameMatched = true;
+    if (artistOk && delta <= 120 && (!unaligned || delta < unaligned.delta)) unaligned = { record: rec, delta };
     if (delta <= DURATION_TOLERANCE_SEC && (!best || delta < best.delta)) best = { record: rec, delta };
   }
 
   if (best) {
     const lines = parseSyncedLyrics(best.record.syncedLyrics ?? "");
     if (lines.length >= 6) return { status: "ok", record: best.record, lines };
+  }
+  if (unaligned) {
+    const lines = parseSyncedLyrics(unaligned.record.syncedLyrics ?? "");
+    if (lines.length >= 6) return { status: "alignment", record: unaligned.record, lines };
   }
   return nameMatched ? { status: "mismatch" } : { status: "none" };
 }
@@ -329,7 +337,7 @@ export function buildChorusSegments(
     const support = countCommentSupport(comments, start, end, durationSec);
     const chapter = chapters.find((c) => STRONG_LABEL_RE.test(c.label) && c.start < end && c.end > start);
 
-    const parts = [`เนื้อเพลงท่อนนี้วนซ้ำ ${total} รอบในเพลง (ดูจากเนื้อเพลงที่มีเวลากำกับ)`];
+    const parts = [`เนื้อเพลงท่อนนี้วนซ้ำ ${total} รอบในเพลง (ดูจากเนื้อเพลงที่มีเวลากำกับ)`, "เวลาอิงเพลงต้นฉบับ อาจคลาดในคลิปที่ตัดต่อหรือเปลี่ยนความเร็ว"];
     if (support > 0) parts.push(`มีคอมเมนต์ ${support} รายการอ้างถึงช่วงนี้`);
     if (chapter) parts.push(`ผู้อัปโหลดแบ่งช่วงนี้เป็น "${chapter.label}"`);
 
@@ -337,7 +345,7 @@ export function buildChorusSegments(
       start,
       end,
       label: `ท่อนฮุค รอบ ${idx + 1}/${total} (ระบบคาดการณ์)`,
-      confidence: total >= 3 || support >= MIN_SUPPORT ? "high" : "medium",
+      confidence: support >= MIN_SUPPORT ? "high" : "medium",
       evidence: parts.join(" · "),
     });
   });
