@@ -4,8 +4,10 @@
 // เล่น/หยุด, Seekbar, แตะสองครั้งข้าม/ย้อน 10 วิ, ปรับเสียง (จำค่าไว้), กลับด้านซ้าย-ขวา,
 // คีย์ลัด (Space / ← → / ↑ ↓), เต็มจอ
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YT_STATE, formatTime, loadYouTubeApi, type YTEvent, type YTPlayer } from "@/lib/youtube";
+import HighlightEditor from "@/components/highlight-editor";
+import { useHighlightEdits } from "@/lib/use-highlight-edits";
 import type { AutoSegment } from "@/lib/highlight-analysis";
 import "./youtube-player.css";
 
@@ -61,7 +63,9 @@ function isTextEntry(el: EventTarget | null): boolean {
 
 type FlashState = { text: string; pos: "left" | "right" | "center" };
 
-export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
+export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights: automaticHighlights = NO_HIGHLIGHTS }: Props) {
+  const edits = useHighlightEdits(videoId);
+  const highlights = useMemo(() => edits.segments ?? automaticHighlights, [edits.segments, automaticHighlights]);
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
@@ -115,7 +119,10 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   // เปลี่ยนคลิป: ล้างท่อนที่เลือกไว้
   useEffect(() => {
     setActiveHl(null);
-  }, [videoId]);
+    activeHlRef.current = null;
+    loopHlRef.current = false;
+    setLoopHl(false);
+  }, [videoId, highlights]);
 
   const showFlash = useCallback((text: string, pos: FlashState["pos"]) => {
     setFlash({ text, pos });
@@ -726,6 +733,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             </small>
           </div>
         )}
+
+        <HighlightEditor key={videoId} segments={highlights} custom={edits.segments !== undefined}
+          time={time} duration={duration} onSave={edits.save} storageError={edits.error} />
 
         {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
         {!isFullscreen && <div className="yp-row">{settings}</div>}
