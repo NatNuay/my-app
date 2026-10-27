@@ -68,20 +68,11 @@ export async function GET(req: NextRequest) {
   const videoId = req.nextUrl.searchParams.get("v") ?? "";
   if (!/^[\w-]{11}$/.test(videoId)) return NextResponse.json({ error: "id คลิปไม่ถูกต้อง" }, { status: 400 });
 
-  const offsetParam = req.nextUrl.searchParams.get("offset");
-  const offset = offsetParam === null ? null : Number(offsetParam);
-  if (offsetParam !== null && (!offsetParam.trim() || !Number.isFinite(offset) || Math.abs(offset!) > 120)) {
-    return NextResponse.json({ error: "ระยะเลื่อนเวลาต้องเป็นตัวเลขระหว่าง -120 ถึง 120 วินาที" }, { status: 400 });
+  if (req.nextUrl.searchParams.has("offset")) {
+    return NextResponse.json({ error: "ไฮไลท์รองรับการตรวจจับอัตโนมัติเท่านั้น" }, { status: 400 });
   }
-
-  const listedResponse = (segments: HighlightsResponse["segments"], source: "chapters" | "comments", duration: number) => respond({
-    eligible: true, source, appliedOffset: offset ?? 0,
-    segments: segments.map((segment) => ({ ...segment,
-      start: Math.max(0, segment.start + (offset ?? 0)), end: Math.min(duration, segment.end + (offset ?? 0)),
-      confidence: offset ? "medium" as const : segment.confidence,
-      evidence: segment.evidence + (offset ? ` · ผู้ใช้เลื่อนเวลา ${offset} วินาที` : ""),
-    })).filter((s) => s.end - s.start >= 1),
-  });
+  const listedResponse = (segments: HighlightsResponse["segments"], source: "chapters" | "comments") =>
+    respond({ eligible: true, source, segments });
 
   try {
     // 1) ข้อมูลคลิป
@@ -101,7 +92,7 @@ export async function GET(req: NextRequest) {
     // คลิปทุกประเภทใช้ chapter และการกำหนดเองได้ ไม่ตัดสิทธิ์ด้วย keyword ในชื่อ
     const comments: CommentInput[] = [];
     const uploaderSegments = chapterHighlights(description, [], duration);
-    if (uploaderSegments.length) return listedResponse(uploaderSegments, "chapters", duration);
+    if (uploaderSegments.length) return listedResponse(uploaderSegments, "chapters");
 
     // ไม่ผูกการอ่านรายการแบ่งท่อนในคอมเมนต์กับการหาเนื้อเพลงสำเร็จ
     let pageToken = "";
@@ -121,7 +112,7 @@ export async function GET(req: NextRequest) {
       } catch { break; } // comments are optional; failure must not prevent lyric analysis
     }
     const listedSegments = chapterHighlights(description, comments, duration);
-    if (listedSegments.length) return listedResponse(listedSegments, "comments", duration);
+    if (listedSegments.length) return listedResponse(listedSegments, "comments");
 
     // 2) เนื้อเพลงที่มีเวลากำกับ ที่ตรงกับคลิป (ชื่อ + ความยาว)
     const records: LrclibRecord[] = [];
@@ -136,7 +127,7 @@ export async function GET(req: NextRequest) {
       match = matchLyrics(records, title, extraText, duration);
       if (match.status === "ok" || match.status === "alignment") break;
     }
-    if (!successfulQueries) return NextResponse.json({ error: "บริการค้นหาเนื้อเพลงไม่พร้อมใช้งาน กรุณาลองอีกครั้ง หรือกำหนดช่วงฮุคเอง" }, { status: 503 });
+    if (!successfulQueries) return NextResponse.json({ error: "บริการค้นหาเนื้อเพลงไม่พร้อมใช้งาน กรุณาลองอีกครั้ง" }, { status: 503 });
     if (match.status === "none") return respond({ eligible: true, reason: "no-lyrics", segments: [] });
     if (match.status === "mismatch") return respond({ eligible: true, reason: "duration-mismatch", segments: [] });
 
@@ -145,18 +136,16 @@ export async function GET(req: NextRequest) {
     if (occurrences.length < 2) return respond({ eligible: true, reason: "no-chorus", segments: [] });
 
     const inferredOffset = inferChorusOffset(occurrences, [description, ...comments.map((c) => c.text)], duration);
-    const appliedOffset = offset ?? inferredOffset ?? 0;
-    if (match.status === "alignment" && offset === null && inferredOffset === undefined) {
-      return respond({ eligible: true, reason: "alignment-required", segments: [], alignment: {
-        songDuration: match.record.duration, clipDuration: duration, firstChorusStart: occurrences[0].start,
-      } });
+    const appliedOffset = inferredOffset ?? 0;
+    if (match.status === "alignment" && inferredOffset === undefined) {
+      return respond({ eligible: true, reason: "alignment-required", segments: [] });
     }
     const aligned = occurrences.map((o) => ({ start: o.start + appliedOffset, end: o.end + appliedOffset }));
 
     const segments = buildChorusSegments(aligned, comments, parseChapters(description, duration), duration);
-    if (offset !== null || inferredOffset !== undefined) for (const segment of segments) {
+    if (inferredOffset !== undefined) for (const segment of segments) {
       segment.confidence = "medium";
-      segment.evidence += ` · เลื่อนเวลา ${appliedOffset.toFixed(2)} วินาทีจาก${offset !== null ? "ค่าที่ผู้ใช้กำหนด" : "ไทม์สแตมป์ฮุคหลายตำแหน่ง"} (ยังไม่ได้เทียบเสียงหรือภาพ)`;
+      segment.evidence += ` · เลื่อนเวลา ${appliedOffset.toFixed(2)} วินาทีจากไทม์สแตมป์ฮุคหลายตำแหน่ง (ยังไม่ได้เทียบเสียงหรือภาพ)`;
     }
     return respond({ eligible: true, segments, appliedOffset, source: "lyrics" });
   } catch {

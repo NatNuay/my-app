@@ -1,6 +1,7 @@
 // app/api/youtube/search/route.ts
 // ค้นหาวิดีโอจาก YouTube Data API v3 ฝั่งเซิร์ฟเวอร์ เพื่อไม่ให้ API key รั่วไปที่เบราว์เซอร์
 import { NextRequest, NextResponse } from "next/server";
+import { classifyVideo } from "@/lib/search-category";
 import type { VideoItem } from "@/lib/youtube";
 
 const API = "https://www.googleapis.com/youtube/v3";
@@ -38,6 +39,7 @@ export async function GET(req: NextRequest) {
 
   const q = req.nextUrl.searchParams.get("q")?.trim();
   const mode = req.nextUrl.searchParams.get("mode") ?? "all";
+  if (!["all", "follow", "tutorial"].includes(mode)) return NextResponse.json({ error: "ประเภทการค้นหาไม่ถูกต้อง" }, { status: 400 });
   if (!q) return NextResponse.json({ items: [] });
 
   try {
@@ -46,7 +48,7 @@ export async function GET(req: NextRequest) {
     searchUrl.search = new URLSearchParams({
       part: "snippet",
       type: "video",
-      maxResults: "12",
+      maxResults: mode === "all" ? "12" : "50",
       videoEmbeddable: "true", // เอาเฉพาะคลิปที่ฝังเล่นได้
       safeSearch: "moderate",
       q: q + (MODE_SUFFIX[mode] ?? ""),
@@ -70,22 +72,27 @@ export async function GET(req: NextRequest) {
     // 2) ดึงความยาวคลิป (กินโควตา 1 หน่วย)
     const detailUrl = new URL(`${API}/videos`);
     detailUrl.search = new URLSearchParams({
-      part: "contentDetails,status",
+      part: "snippet,contentDetails,status",
       id: ids.join(","),
       key,
     }).toString();
     const detailRes = await fetch(detailUrl, { next: { revalidate: 3600 } });
     const detailJson = await detailRes.json();
 
+    if (!detailRes.ok) return NextResponse.json({ error: detailJson?.error?.message ?? "ดึงข้อมูลคลิปไม่สำเร็จ" }, { status: detailRes.status });
+
+    const categories = new Map<string, string>();
     const durations = new Map<string, number>();
     const embeddable = new Set<string>();
     for (const v of detailJson.items ?? []) {
+      categories.set(v.id, classifyVideo(decodeEntities(v.snippet?.title ?? ""), v.snippet?.tags ?? [], v.snippet?.description ?? ""));
       durations.set(v.id, parseDuration(v.contentDetails?.duration));
       if (v.status?.embeddable) embeddable.add(v.id);
     }
 
     const items: VideoItem[] = (searchJson.items ?? [])
-      .filter((it: { id: { videoId: string } }) => embeddable.has(it.id.videoId))
+      .filter((it: { id: { videoId: string } }) => embeddable.has(it.id.videoId) && (mode === "all" || categories.get(it.id.videoId) === mode))
+      .slice(0, 12)
       .map(
         (it: {
           id: { videoId: string };

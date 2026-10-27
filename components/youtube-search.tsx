@@ -2,7 +2,7 @@
 // components/youtube-search.tsx
 // ช่องค้นหา + ตัวกรองประเภท (ทั้งหมด / เต้นตาม / สอนเต้น) + รายการผลลัพธ์
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import HeartButton from "@/components/heart-button";
 import { formatTime, type SearchMode, type VideoItem } from "@/lib/youtube";
 
@@ -34,21 +34,31 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const request = useRef(0);
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
+
   async function search(nextMode: SearchMode = mode) {
     const q = query.trim();
     if (!q) return;
+    const requestId = ++request.current;
+    controller.current?.abort();
+    const ac = new AbortController();
+    controller.current = ac;
+    setResults(null);
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/youtube/search?q=${encodeURIComponent(q)}&mode=${nextMode}`);
+      const res = await fetch(`/api/youtube/search?q=${encodeURIComponent(q)}&mode=${nextMode}`, { signal: ac.signal });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "ค้นหาไม่สำเร็จ");
-      setResults(json.items);
+      if (requestId === request.current) setResults(json.items);
     } catch (err) {
+      if (requestId !== request.current || ac.signal.aborted) return;
       setError(err instanceof Error ? err.message : "ค้นหาไม่สำเร็จ");
       setResults(null);
     } finally {
-      setLoading(false);
+      if (requestId === request.current) setLoading(false);
     }
   }
 
@@ -81,7 +91,7 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
               checked={mode === m.value}
               onChange={() => {
                 setMode(m.value);
-                if (results !== null) search(m.value);
+                if (results !== null || loading) search(m.value);
               }}
             />{" "}
             {m.label}
@@ -91,7 +101,7 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
 
       {loading && <p>กำลังค้นหา…</p>}
       {error && <p role="alert">{error}</p>}
-      {!loading && results?.length === 0 && <p>ไม่พบคลิปที่เล่นได้ ลองเปลี่ยนคำค้นหา</p>}
+      {!loading && results?.length === 0 && <p>ไม่พบคลิปที่ตรงกับประเภทที่เลือก ลองเปลี่ยนคำค้นหาหรือเลือก “ทั้งหมด”</p>}
 
       {onAdd && results && results.length > 0 && (
         <p>
