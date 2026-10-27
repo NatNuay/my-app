@@ -3,7 +3,6 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import HighlightTiming from "@/components/highlight-timing";
 import HeartButton from "@/components/heart-button";
 import PlaylistPanel from "@/components/playlist-panel";
 import YouTubePlayer from "@/components/youtube-player";
@@ -30,11 +29,11 @@ const NO_HIGHLIGHT_REASON: Record<string, string> = {
   "not-dance-along": "ไม่แสดงท่อนฮุค: ระบบไม่เห็นว่าเป็นคลิปเต้นตาม",
   duration: "ไม่แสดงท่อนฮุค: ยังไม่ทราบความยาวคลิป (อาจเป็นไลฟ์)",
   "not-found": "ไม่แสดงท่อนฮุค: ไม่พบข้อมูลคลิปจาก YouTube",
-  "no-lyrics": "ไม่พบ chapter หรือเนื้อเพลงที่ตรงกัน คุณสามารถเพิ่มช่วงฮุคเองได้ใต้เครื่องเล่น",
-  "alignment-required": "พบเนื้อเพลงแล้ว แต่ความยาวคลิปต่างกัน กรุณาปรับเวลาเพื่อแสดงท่อนฮุค",
+  "no-lyrics": "ยังไม่พบข้อมูลที่ใช้ตรวจจับท่อนฮุคอัตโนมัติของคลิปนี้",
+  "alignment-required": "ยังไม่แสดงท่อนฮุค: ระบบยืนยันตำแหน่งเพลงในคลิปนี้ไม่ได้",
   "duration-mismatch": "ไม่แสดงท่อนฮุค: เพลงที่พบมีความยาวไม่ตรงกับคลิป (คลิปอาจมีอินโทรหรือตัดต่อ) จึงไม่เดาตำแหน่ง",
   "no-chorus": "ไม่แสดงท่อนฮุค: ไม่พบท่อนที่เนื้อเพลงวนซ้ำ",
-  default: "ยังไม่พบท่อนฮุคอัตโนมัติ คุณสามารถเพิ่มช่วงเองได้ใต้เครื่องเล่น",
+  default: "ยังไม่พบท่อนฮุคอัตโนมัติของคลิปนี้",
 };
 
 // สิ่งที่เก็บในประวัติเบราว์เซอร์ต่อหนึ่งหน้า: คลิปที่เล่นอยู่ (null = หน้าหลักที่ยังไม่ได้เล่นอะไร) และ playlist ต้นทาง
@@ -245,9 +244,6 @@ export default function Page() {
             loopOne={mode === "single"}
             highlights={auto.segments}
           />
-          {(auto.alignment || auto.segments.length > 0) && (
-            <HighlightTiming key={current.id} alignment={auto.alignment} offset={auto.offset ?? auto.appliedOffset} onChange={auto.setOffset} />
-          )}
           {auto.status === "loading" && <small>กำลังวิเคราะห์ท่อนฮุคของคลิปนี้…</small>}
           {auto.status === "none" && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
