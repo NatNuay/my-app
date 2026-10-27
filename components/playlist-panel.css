@@ -1,0 +1,56 @@
+/* หน้า playlist สไตล์คลังเพลง: รายการ playlist + ปก, และหน้ารายละเอียดของแต่ละ playlist */
+.pl-create { display: flex; gap: 0.5rem; margin: 0.75rem 0 1rem; flex-wrap: wrap; }
+
+/* ปก (สี่เหลี่ยมจัตุรัส) */
+.pl-cover { position: relative; flex: none; overflow: hidden; border-radius: 0.5rem; background: #2a2a2a; display: grid; place-items: center; }
+.pl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pl-cover--liked { background: linear-gradient(135deg, #4b2bf0, #a4d6c4); color: #fff; }
+.pl-cover--empty { color: #888; }
+
+/* รายการ playlist */
+.pl-lib { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+.pl-lib-row { display: flex; align-items: center; gap: 0.9rem; width: 100%; padding: 0.4rem; border: 0; border-radius: 0.6rem;
+  background: none; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.pl-lib-row:hover { background: rgb(128 128 128 / 0.15); }
+.pl-lib-name { font-weight: 600; }
+.pl-lib-sub { font-size: 0.85rem; opacity: 0.65; }
+
+/* หน้ารายละเอียด */
+.pl-back { margin-bottom: 0.75rem; }
+.pl-head { display: flex; gap: 1.25rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 1rem; }
+.pl-head-info { display: grid; gap: 0.35rem; min-width: 0; }
+.pl-head-info h3 { margin: 0; font-size: 1.8rem; overflow-wrap: anywhere; }
+.pl-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: 0.5rem 0 1rem; }
+.pl-play-all { display: grid; place-items: center; width: 3rem; height: 3rem; padding: 0; border: 0; border-radius: 50%;
+  background: #1db954; color: #000; cursor: pointer; }
+.pl-play-all:disabled { opacity: 0.4; cursor: default; }
+
+/* แถวเพลง */
+.pl-tracks { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+.pl-row { display: grid; grid-template-columns: 1.75rem 96px 1fr auto; gap: 0.75rem; align-items: center; padding: 0.35rem 0.5rem; border-radius: 0.5rem; }
+.pl-row:hover { background: rgb(128 128 128 / 0.12); }
+.pl-row.is-playing { background: rgb(29 185 84 / 0.16); font-weight: 700; }
+.pl-num { text-align: center; opacity: 0.6; font-weight: 400; }
+.pl-thumb { position: relative; width: 96px; height: 54px; border-radius: 0.35rem; overflow: hidden; background: #222; }
+.pl-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pl-thumb-play { position: absolute; inset: 0; display: grid; place-items: center; border: 0; padding: 0; cursor: pointer;
+  background: rgb(0 0 0 / 0.2); color: #fff; transition: background 0.15s; }
+.pl-thumb-play:hover, .pl-thumb-play:focus-visible { background: rgb(0 0 0 / 0.55); }
+.pl-thumb-play svg { filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.7)); }
+.pl-title { overflow-wrap: anywhere; }
+.pl-meta { font-size: 0.85rem; font-weight: 400; opacity: 0.65; }
+.pl-row-actions { display: flex; align-items: center; gap: 0.15rem; }
+.pl-icon-btn { display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0; border: 0; border-radius: 50%;
+  background: none; color: inherit; cursor: pointer; font: inherit; }
+.pl-icon-btn:hover:not(:disabled) { background: rgb(128 128 128 / 0.25); }
+.pl-icon-btn:disabled { opacity: 0.25; cursor: default; }
+
+@media (max-width: 640px) {
+  .pl-row { grid-template-columns: 96px 1fr; }
+  .pl-num { display: none; }
+  .pl-row-actions { grid-column: 1 / -1; justify-content: flex-end; }
+}
+
+/* ปุ่มเลือกวิธีเล่น (เรียง / สุ่ม): อันที่เลือกอยู่เป็นตัวหนา มีเส้นขอบเน้น */
+.pl-mode { display: inline-flex; gap: 0.4rem; }
+.pl-mode button[aria-pressed="true"] { font-weight: 700; outline: 2px solid #1db954; outline-offset: 1px; }

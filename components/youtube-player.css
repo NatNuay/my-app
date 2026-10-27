@@ -1,0 +1,64 @@
+/* ระยะที่ขยาย iframe เกินเวทีด้านบน/ล่าง เพื่อซ่อนแถบชื่อคลิปของ YouTube
+   ถ้ายังเห็นชื่อคลิปโผล่ ให้เพิ่มเลข 56px / 14% */
+.yp-stage { --yp-pad: max(56px, 14%); position: relative; aspect-ratio: 16 / 9; background: #000; max-width: 960px; overflow: hidden; }
+.yp-frame { position: absolute; left: 0; right: 0; top: calc(-1 * var(--yp-pad)); height: calc(100% + 2 * var(--yp-pad)); }
+.yp-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.yp-stage.is-mirrored .yp-frame { transform: scaleX(-1); }
+.yp-tap { position: absolute; inset: 0; cursor: pointer; touch-action: manipulation; user-select: none; }
+.yp-flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 0.5rem 0.9rem;
+  border-radius: 999px; background: rgb(0 0 0 / 0.65); color: #fff; pointer-events: none; }
+.yp-flash--left { left: 10%; }
+.yp-flash--right { right: 10%; }
+.yp-flash--center { left: 50%; transform: translate(-50%, -50%); }
+.yp-msg { position: absolute; left: 0; right: 0; bottom: 0; padding: 0.5rem 0.75rem; background: rgb(0 0 0 / 0.7); color: #fff; }
+.yp-controls { max-width: 960px; display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+.yp-seek { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; }
+.yp-seek input { width: 100%; }
+.yp-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+
+/* ปุ่มเต็มจอบนจอวิดีโอ: จางๆ ปกติ และขึ้นเมื่อเมาส์อยู่บนจอ */
+.yp-fs { position: absolute; right: 0.6rem; bottom: 0.6rem; z-index: 2; display: grid; place-items: center;
+  width: 2.5rem; height: 2.5rem; padding: 0; border: 0; border-radius: 0.5rem; cursor: pointer;
+  background: rgb(0 0 0 / 0.35); color: #fff; opacity: 0; transition: opacity 0.2s, background 0.2s; }
+.yp-stage:hover .yp-fs, .yp-fs:focus-visible { opacity: 0.55; }
+.yp-stage .yp-fs:hover { opacity: 1; background: rgb(0 0 0 / 0.65); }
+.yp-fs:disabled { display: none; }
+@media (hover: none) { .yp-fs { opacity: 0.55; } } /* จอสัมผัสไม่มี hover จึงแสดงจางๆ ตลอด */
+.yp-note { font-size: 0.85rem; opacity: 0.8; }
+
+/* โหมดเต็มจอ: วิดีโอเต็มพื้นที่ แถบกรอคลิปลอยทับด้านล่าง ปุ่ม/เมนูอยู่มุมขวาบน */
+.yp-root.is-fullscreen { position: relative; width: 100vw; height: 100vh; background: #000; color: #fff; }
+.yp-root.is-fullscreen .yp-stage { position: absolute; inset: 0; aspect-ratio: auto; max-width: none; }
+.yp-root.is-fullscreen .yp-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; max-width: none; margin: 0;
+  padding: 2.5rem 1rem 0.75rem; background: linear-gradient(transparent, rgb(0 0 0 / 0.7)); transition: opacity 0.4s; }
+.yp-root.is-fullscreen .yp-fs { top: 0.75rem; bottom: auto; right: 0.75rem; opacity: 0.7; transition: opacity 0.4s, background 0.2s; }
+.yp-root.is-fullscreen .yp-fs:hover { opacity: 1; }
+
+.yp-more { position: absolute; top: 0.75rem; right: 4rem; z-index: 2; display: grid; place-items: center;
+  width: 2.5rem; height: 2.5rem; padding: 0; border: 0; border-radius: 0.5rem; cursor: pointer;
+  background: rgb(0 0 0 / 0.35); color: #fff; opacity: 0.7; transition: opacity 0.4s, background 0.2s; }
+.yp-more:hover { opacity: 1; background: rgb(0 0 0 / 0.65); }
+.yp-menu { position: absolute; top: 3.9rem; right: 4rem; z-index: 4; display: grid; gap: 0.75rem; padding: 0.9rem 1rem;
+  min-width: 14rem; border-radius: 0.6rem; background: rgb(20 20 20 / 0.92); color: #fff; }
+.yp-menu label { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+
+/* เต็มจอ + ไม่ขยับเมาส์ → ทุกอย่างเฟดหาย และซ่อนเคอร์เซอร์ */
+.yp-root.is-fullscreen.is-idle { cursor: none; }
+.yp-root.is-fullscreen.is-idle .yp-tap { cursor: none; }
+.yp-root.is-fullscreen.is-idle .yp-controls,
+.yp-root.is-fullscreen.is-idle .yp-fs,
+.yp-root.is-fullscreen.is-idle .yp-more,
+.yp-root.is-fullscreen.is-idle .yp-menu { opacity: 0; pointer-events: none; }
+
+/* ท่อนยอดนิยมบนแถบกรอ */
+.yp-track { position: relative; display: flex; align-items: center; min-width: 0; }
+.yp-track input { position: relative; }
+/* เลนซ้อนทับแถบกรอ: เว้นซ้าย/ขวาครึ่งหนึ่งของปุ่มเลื่อน (~8px) ให้ตำแหน่งตรงกับตัวเลื่อนจริง */
+.yp-hl-lane { position: absolute; left: 8px; right: 8px; top: 0; bottom: 0; pointer-events: none; }
+.yp-hl { position: absolute; top: 50%; height: 8px; transform: translateY(-50%); border-radius: 4px; background: rgb(255 64 129 / 0.35); }
+.yp-hl.is-high { background: rgb(255 64 129 / 0.65); }
+.yp-hl.is-active { background: rgb(255 64 129 / 0.95); height: 10px; }
+.yp-hls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; }
+.yp-hl-chip[aria-pressed="true"] { font-weight: 700; outline: 2px solid rgb(255 64 129); outline-offset: 1px; }
+.yp-hl-loop { font-size: 0.9rem; }
+.yp-hl-evidence { flex-basis: 100%; opacity: 0.85; }
