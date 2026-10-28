@@ -5,7 +5,7 @@
 // โควตา YouTube ต่อคลิปใหม่ไม่เกิน 4 หน่วย (videos 1 + comments ไม่เกิน 3 หน้า) ผลถูกแคชไว้
 // เนื้อเพลงใช้คำนวณเวลาเท่านั้น ไม่ถูกส่งไปที่เบราว์เซอร์และไม่ถูกเก็บ
 // หมายเหตุ: ไฟล์นี้ต้องอยู่ที่ app/api/youtube/highlights/route.ts (คนละโฟลเดอร์กับ search/route.ts)
-import { chapterHighlights, inferChorusOffset, lyricQueries } from "@/lib/highlight-sources";
+import { chapterHighlights, inferChorusOffset, inferLyricOffset, lyricQueries, mergeHighlights } from "@/lib/highlight-sources";
 import { NextRequest, NextResponse } from "next/server";
 import {
   buildChorusSegments,
@@ -89,10 +89,9 @@ export async function GET(req: NextRequest) {
 
     if (!Number.isFinite(duration) || duration <= 0) return respond({ eligible: false, reason: "duration", segments: [] });
 
-    // คลิปทุกประเภทใช้ chapter และการกำหนดเองได้ ไม่ตัดสิทธิ์ด้วย keyword ในชื่อ
+    // คลิปทุกประเภทใช้ chapter ได้ ไม่ตัดสิทธิ์ด้วย keyword ในชื่อ
     const comments: CommentInput[] = [];
     const uploaderSegments = chapterHighlights(description, [], duration);
-    if (uploaderSegments.length) return listedResponse(uploaderSegments, "chapters");
 
     // ไม่ผูกการอ่านรายการแบ่งท่อนในคอมเมนต์กับการหาเนื้อเพลงสำเร็จ
     let pageToken = "";
@@ -112,7 +111,10 @@ export async function GET(req: NextRequest) {
       } catch { break; } // comments are optional; failure must not prevent lyric analysis
     }
     const listedSegments = chapterHighlights(description, comments, duration);
-    if (listedSegments.length) return listedResponse(listedSegments, "comments");
+    const metadataSource = uploaderSegments.length ? "chapters" as const : "comments" as const;
+    const fallback = (reason: string) => listedSegments.length
+      ? listedResponse(listedSegments, metadataSource)
+      : respond({ eligible: true, reason, segments: [] });
 
     // 2) เนื้อเพลงที่มีเวลากำกับ ที่ตรงกับคลิป (ชื่อ + ความยาว)
     const records: LrclibRecord[] = [];
@@ -127,27 +129,34 @@ export async function GET(req: NextRequest) {
       match = matchLyrics(records, title, extraText, duration);
       if (match.status === "ok" || match.status === "alignment") break;
     }
+    if (!successfulQueries && listedSegments.length) return listedResponse(listedSegments, metadataSource);
     if (!successfulQueries) return NextResponse.json({ error: "บริการค้นหาเนื้อเพลงไม่พร้อมใช้งาน กรุณาลองอีกครั้ง" }, { status: 503 });
-    if (match.status === "none") return respond({ eligible: true, reason: "no-lyrics", segments: [] });
-    if (match.status === "mismatch") return respond({ eligible: true, reason: "duration-mismatch", segments: [] });
+    if (match.status === "none") return fallback("no-lyrics");
+    if (match.status === "mismatch") return fallback("duration-mismatch");
 
     // 3) ท่อนที่เนื้อเพลงวนซ้ำ = ท่อนฮุค
-    const occurrences = detectChorus(match.lines);
-    if (occurrences.length < 2) return respond({ eligible: true, reason: "no-chorus", segments: [] });
+    const occurrences = detectChorus(match.lines, match.record.trackName, match.record.artistName);
+    if (occurrences.length < 2) return fallback("no-chorus");
 
-    const inferredOffset = inferChorusOffset(occurrences, [description, ...comments.map((c) => c.text)], duration);
+    const texts = [description, ...comments.map((c) => c.text)];
+    const chorusOffset = inferChorusOffset(occurrences, texts, duration);
+    const lyricOffset = inferLyricOffset(match.lines, texts, duration);
+    const conflicting = chorusOffset !== undefined && lyricOffset !== undefined && Math.abs(chorusOffset - lyricOffset) > 3;
+    const inferredOffset = conflicting ? undefined : lyricOffset ?? chorusOffset;
     const appliedOffset = inferredOffset ?? 0;
-    if (match.status === "alignment" && inferredOffset === undefined) {
-      return respond({ eligible: true, reason: "alignment-required", segments: [] });
+    if (conflicting || (match.status === "alignment" && inferredOffset === undefined)) {
+      return fallback("alignment-required");
     }
     const aligned = occurrences.map((o) => ({ start: o.start + appliedOffset, end: o.end + appliedOffset }));
 
     const segments = buildChorusSegments(aligned, comments, parseChapters(description, duration), duration);
     if (inferredOffset !== undefined) for (const segment of segments) {
       segment.confidence = "medium";
-      segment.evidence += ` · เลื่อนเวลา ${appliedOffset.toFixed(2)} วินาทีจากไทม์สแตมป์ฮุคหลายตำแหน่ง (ยังไม่ได้เทียบเสียงหรือภาพ)`;
+      segment.evidence += ` · เลื่อนเวลา ${appliedOffset.toFixed(2)} วินาทีจาก${lyricOffset !== undefined ? "ไทม์สแตมป์ที่อ้างเนื้อร้อง" : "ไทม์สแตมป์ฮุค"}หลายตำแหน่ง (ยังไม่ได้เทียบเสียงหรือภาพ)`;
     }
-    return respond({ eligible: true, segments, appliedOffset, source: "lyrics" });
+    const combined = mergeHighlights(listedSegments, segments);
+    return respond({ eligible: true, segments: combined, appliedOffset,
+      source: listedSegments.length ? (combined.length > listedSegments.length ? "mixed" : metadataSource) : "lyrics" });
   } catch {
     return NextResponse.json({ error: "วิเคราะห์ไม่สำเร็จ" }, { status: 502 });
   }

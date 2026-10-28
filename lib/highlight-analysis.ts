@@ -12,6 +12,7 @@
 export type Confidence = "high" | "medium";
 
 export interface AutoSegment {
+  kind?: "chorus" | "dance-break";
   start: number; // วินาที (ตามเวลาของคลิป)
   end: number;
   label: string;
@@ -25,7 +26,7 @@ export interface HighlightsResponse {
   /** เหตุผลที่ไม่มีท่อน: tutorial | aerobic | not-dance-along | duration | not-found | no-lyrics | duration-mismatch | no-chorus */
   reason?: string;
   segments: AutoSegment[];
-  source?: "chapters" | "comments" | "lyrics";
+  source?: "chapters" | "comments" | "lyrics" | "mixed";
   appliedOffset?: number;
 }
 
@@ -38,6 +39,7 @@ export interface Chapter {
   start: number;
   end: number;
   label: string;
+  explicitEnd?: boolean;
 }
 
 export interface LyricLine {
@@ -62,7 +64,7 @@ export interface LrclibRecord {
 export const DURATION_TOLERANCE_SEC = 4; // ความยาวเพลงกับคลิปต่างกันได้ไม่เกินนี้ ถึงจะถือว่าเวลาตรงกัน
 const PICKUP_WINDOW_SEC = 3; // ขยายคำขึ้นต้นสั้น ๆ ที่มีอีกรอบรองรับ ไม่ลากย้อนเข้า pre-chorus
 const MIN_CHORUS_SEC = 10;
-const MAX_CHORUS_SEC = 40;
+const MAX_CHORUS_SEC = 60;
 const MERGE_GAP_SEC = 3; // บรรทัดฮุคที่ซ้ำติดกันห่างไม่เกินนี้ นับเป็นรอบเดียว
 const MAX_OCCURRENCES = 8; // ซ้ำถี่เกินนี้น่าจะเป็นคำแทรก ไม่ใช่ฮุค
 const MIN_SUPPORT = 3; // คอมเมนต์ยืนยันอย่างน้อยเท่านี้ ถึงเพิ่มระดับความมั่นใจ
@@ -106,17 +108,33 @@ const CHAPTER_RE = /^[^\d\n]{0,4}((?:\d{1,2}:)?\d{1,2}:[0-5]\d)[ \t]*[-–—:.)
 const STRONG_LABEL_RE = /chorus|hook|dance break|point|challenge|drop|ฮุค|คอรัส|ท่อนเด็ด|ท่าเด็ด|ท่าหลัก/i;
 
 export function parseChapters(description: string, durationSec: number): Chapter[] {
-  const raw: { start: number; label: string }[] = [];
+  const raw: { start: number; end?: number; label: string }[] = [];
+  const clock = "((?:\\d{1,2}:)?\\d{1,2}:[0-5]\\d)";
+  const range = new RegExp(`^(.*?)${clock}\\s*[-–—~〜]\\s*${clock}\\s*(.*)$`);
+  const labelFirst = new RegExp(`^(.+?)\\s+${clock}\\s*$`);
   for (const line of description.split(/\r?\n/)) {
+    const r = range.exec(line.trim());
+    if (r) {
+      const start = toSeconds(r[2]), end = toSeconds(r[3]);
+      const label = `${r[1]} ${r[4]}`.replace(/^[\s:|–—-]+|[\s:|–—-]+$/g, "").trim();
+      if (label && start < end && end <= durationSec) raw.push({ start, end, label: label.slice(0, 100) });
+      continue;
+    }
     const m = CHAPTER_RE.exec(line.trim());
-    if (!m) continue;
-    const start = toSeconds(m[1]);
-    if (start <= durationSec) raw.push({ start, label: m[2].trim().slice(0, 60) });
+    const suffix = !m ? labelFirst.exec(line.trim()) : null;
+    if (!m && !suffix) continue;
+    const start = toSeconds(m ? m[1] : suffix![2]);
+    const label = (m ? m[2] : suffix![1]).trim();
+    // Multiple timestamps on one line are handled as separate cues, not as a chapter label.
+    if (parseTimestamps(label, Infinity).length || !label) continue;
+    if (start < durationSec) raw.push({ start, label: label.slice(0, 100) });
   }
-  raw.sort((a, b) => a.start - b.start);
+  raw.sort((a, b) => a.start - b.start || Number(b.end !== undefined) - Number(a.end !== undefined));
   const uniq = raw.filter((c, i) => i === 0 || c.start !== raw[i - 1].start);
-  if (uniq.length < 2) return [];
-  return uniq.map((c, i) => ({ start: c.start, end: uniq[i + 1]?.start ?? durationSec, label: c.label }));
+  return uniq.filter((c) => c.end !== undefined || uniq.length >= 2).map((c) => {
+    const next = uniq.find((other) => other.start > c.start)?.start ?? durationSec;
+    return { start: c.start, end: Math.min(c.end ?? next, next), label: c.label, explicitEnd: c.end !== undefined };
+  });
 }
 
 // ---------- คลิปนี้เข้าข่ายไหม (เต้นตาม ไม่ใช่แอโรบิก/คลิปสอน) ----------
@@ -173,8 +191,8 @@ export function parseSyncedLyrics(lrc: string): LyricLine[] {
 // เครื่องหมายวรรคตอน/ช่องว่างทั่วไป (ASCII + เครื่องหมายทั่วไปของ Unicode) ไม่ใช้ \p{} เพื่อรองรับทุกเป้าหมายของคอมไพเลอร์
 const PUNCT_RE = /[\s\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u00bf\u2000-\u206f\u3000-\u303f]+/g;
 
-function normalizeLine(s: string): string {
-  return s.toLowerCase().replace(PUNCT_RE, " ").trim();
+export function normalizeLine(s: string): string {
+  return s.normalize("NFKC").toLowerCase().replace(PUNCT_RE, " ").trim();
 }
 
 /** บรรทัดที่มีเนื้อหาพอจะใช้เทียบการซ้ำ: ตัดคำแทรกอย่าง "oh oh oh" "yeah yeah" "la la la" ออก */
@@ -190,7 +208,12 @@ function isInformative(n: string): boolean {
  * หาท่อนฮุค = บล็อกของบรรทัดที่เนื้อเพลงวนกลับมาซ้ำ 2-8 รอบ ให้คะแนนจากจำนวนรอบก่อน แล้วค่อยดูความยาวบล็อก
  * คืนเวลาเริ่ม-จบของแต่ละรอบ (เวลาตามเพลงต้นฉบับ) หรือ [] ถ้าไม่พบ
  */
-export function detectChorus(lines: LyricLine[]): Occurrence[] {
+export function detectChorus(lines: LyricLine[], trackName = "", artistName = ""): Occurrence[] {
+  let track = normalizeLine(cleanSongTitle(trackName));
+  const artist = normalizeLine(artistName.split(/,|&|feat\.?|\(/i)[0] ?? "");
+  if (artist && track.startsWith(`${artist} `)) track = track.slice(artist.length).trim();
+  if (artist && track.endsWith(` ${artist}`)) track = track.slice(0, -artist.length).trim();
+  const mentionsTrack = (text: string) => track.length >= 3 && ` ${text} `.includes(` ${track} `);
   const n = lines.length;
   if (n < 6) return [];
   const norm = lines.map((l) => normalizeLine(l.text));
@@ -206,7 +229,26 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
       let run = 0;
       while (i + run < j && same(i + run, j + run)) run++; // ไม่ให้บล็อกซ้อนทับตัวเอง
       if (run < 2 || info.slice(i, i + run).filter(Boolean).length < 2) continue;
-      const key = JSON.stringify(norm.slice(i, i + run));
+      let seed = i;
+      // The title is only a cue, not proof of a chorus boundary: it can occur mid-hook.
+      // Trim only with additional recurrence support, or a sustained title refrain after a long prefix.
+      const titleAt = norm.slice(i, i + run).findIndex(mentionsTrack);
+      const copiesOf = (first: number, length: number) => {
+        let copies = 0;
+        for (let p = 0; p + length <= n;) {
+          let k = 0;
+          while (k < length && same(first + k, p + k)) k++;
+          if (k === length) { copies++; p += length; } else p++;
+        }
+        return copies;
+      };
+      const titleMentions = norm.slice(i + Math.max(0, titleAt), i + run).filter(mentionsTrack).length;
+      const titleHook = titleAt > 0 && lines[i + titleAt].t - lines[i].t >= 8 && titleMentions >= 2;
+      if (titleAt > 0 && run - titleAt >= 2 &&
+        (copiesOf(i + titleAt, run - titleAt) > copiesOf(i, run) || titleHook)) {
+        seed += titleAt; run -= titleAt;
+      }
+      const key = JSON.stringify(norm.slice(seed, seed + run));
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -215,7 +257,7 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
       for (let p = 0; p + run <= n; ) {
         let ok = true;
         for (let k = 0; k < run; k++) {
-          if (!same(i + k, p + k)) {
+          if (!same(seed + k, p + k)) {
             ok = false;
             break;
           }
@@ -237,9 +279,9 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
         const endIdx = a + run;
         const end = endIdx < n ? lines[endIdx].t : lines[n - 1].t + 4;
         // ไม่สร้างความยาวขั้นต่ำด้วยการลากเข้า verse ที่ไม่มีหลักฐานการซ้ำ
-        return { start, end: Math.min(end, start + MAX_CHORUS_SEC) };
+        return { start, end };
       });
-      if (raw.some((o) => o.end - o.start < MIN_CHORUS_SEC)) continue;
+      if (raw.some((o) => o.end - o.start < MIN_CHORUS_SEC || o.end - o.start > MAX_CHORUS_SEC)) continue;
 
       // รวมรอบที่ติดกัน (เช่น บรรทัดฮุคเดียวร้องซ้ำต่อกัน) ให้เป็นรอบเดียว
       const occ: Occurrence[] = [];
@@ -248,7 +290,7 @@ export function detectChorus(lines: LyricLine[]): Occurrence[] {
         if (prev && o.start - prev.end <= MERGE_GAP_SEC) prev.end = Math.max(prev.end, o.end);
         else occ.push({ ...o });
       }
-      if (occ.length < 2 || occ.length > MAX_OCCURRENCES) continue;
+      if (occ.length < 2 || occ.length > MAX_OCCURRENCES || occ.some((o) => o.end - o.start > MAX_CHORUS_SEC)) continue;
 
       const score = Math.min(occ.length, 4) * 30 + occ.reduce((sum, o) => sum + Math.min(o.end - o.start, MAX_CHORUS_SEC), 0) / occ.length;
       if (!best || score > best.score) best = { score, occ };
@@ -291,7 +333,36 @@ export function matchLyrics(
   let best: { record: LrclibRecord; delta: number } | null = null;
   let unaligned: { record: LrclibRecord; delta: number } | null = null;
 
-  for (const rec of records) {
+  // LRCLIB may contain duplicate timed lyrics with contradictory duration metadata.
+  // Group by actual timestamps/text so a mistyped duration cannot win by being closest to the clip.
+  const prepared = records.flatMap((record) => {
+    if (!record.syncedLyrics || record.instrumental || !Number.isFinite(record.duration) || record.duration <= 0) return [];
+    const lines = parseSyncedLyrics(record.syncedLyrics);
+    if (lines.length < 6 || lines.some((line) => !Number.isFinite(line.t) || line.t < 0)) return [];
+    if (lines[lines.length - 1].t > record.duration + 4) return []; // timed lyrics extend beyond declared song
+    const fingerprint = JSON.stringify([normalizeForMatch(record.trackName), normalizeForMatch(record.artistName),
+      lines.map((line) => [Math.round(line.t * 10), normalizeLine(line.text)])]);
+    return [{ record, lines, fingerprint }];
+  });
+  const groups = new Map<string, typeof prepared>();
+  for (const candidate of prepared) {
+    const group = groups.get(candidate.fingerprint) ?? [];
+    group.push(candidate);
+    groups.set(candidate.fingerprint, group);
+  }
+  const candidates = prepared.filter((candidate) => {
+    const group = groups.get(candidate.fingerprint)!;
+    const clusters = group.map((center) => ({ duration: center.record.duration,
+      count: group.filter((other) => Math.abs(other.record.duration - center.record.duration) <= 4).length,
+    })).sort((a, b) => b.count - a.count);
+    const bestCluster = clusters[0];
+    if (bestCluster.count < 2) return true;
+    // Equal support for conflicting lengths is ambiguous; keep it for alignment, not automatic timing.
+    if (clusters.some((c) => c.count === bestCluster.count && Math.abs(c.duration - bestCluster.duration) > 8)) return false;
+    return Math.abs(candidate.record.duration - bestCluster.duration) <= 4;
+  });
+
+  for (const { record: rec } of candidates) {
     if (!rec.syncedLyrics || rec.instrumental || !Number.isFinite(rec.duration) || rec.duration <= 0) continue;
     const track = normalizeForMatch(rec.trackName);
     if (!containsName(title, track)) continue;
@@ -340,6 +411,7 @@ export function buildChorusSegments(
     if (chapter) parts.push(`ผู้อัปโหลดแบ่งช่วงนี้เป็น "${chapter.label}"`);
 
     out.push({
+      kind: "chorus",
       start,
       end,
       label: `ท่อนฮุค รอบ ${idx + 1}/${total} (ระบบคาดการณ์)`,

@@ -31,11 +31,11 @@ const pattern = ['Dance in your own way', 'RUDE!', 'Nothing can stop us now', 'W
 const lyrics = [0, 60, 120].flatMap((start) => pattern.map((text, i) => `[${Math.floor((start + i * 3) / 60)}:${String((start + i * 3) % 60).padStart(2, '0')}]${text}`).concat(`[${Math.floor((start + 18) / 60)}:${String((start + 18) % 60).padStart(2, '0')}]unique verse ${start}`)).join('\n');
 const record = { trackName: 'New Song', artistName: 'Some Artist', duration: 200, syncedLyrics: lyrics };
 
-test('arbitrary non-dance clips use uploader hook chapters without lyrics or comments', async () => {
+test('uploader hook chapters survive unavailable optional analysis sources', async () => {
   let calls = 0;
   globalThis.fetch = async () => { calls++; return respond(snippet(chapterText, 'A concert recording')); };
   const response = await request(); const data = await response.json();
-  assert.equal(response.status, 200); assert.equal(data.source, 'chapters'); assert.equal(data.segments.length, 2); assert.equal(calls, 1);
+  assert.equal(response.status, 200); assert.equal(data.source, 'chapters'); assert.equal(data.segments.length, 2); assert.ok(calls >= 1);
 });
 
 test('manual time offsets are no longer accepted', async () => {
@@ -100,4 +100,29 @@ test('longer clips still align automatically with consistent chorus timestamps',
   };
   const data = await (await request()).json();
   assert.equal(data.segments.length, 3); assert.equal(data.appliedOffset, 13); assert.equal(data.segments[0].start, 13);
+});
+
+test('timestamped lyric quotes align longer clips without an audio import change', async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith('/videos')) return respond(snippet('', undefined, 'PT3M33S'));
+    if (u.pathname.endsWith('/commentThreads')) return respond({ items: [{ snippet: { topLevelComment: { snippet: { textDisplay: '0:13 Dance in your own way\n1:19 Nothing can stop us now\n2:31 unique verse 120', likeCount: 0 } } } }] });
+    return respond([record]);
+  };
+  const data = await (await request()).json();
+  assert.equal(data.segments.length, 3); assert.equal(data.appliedOffset, 13);
+});
+
+test('a bounded dance break does not replace the lyric chorus results', async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith('/videos')) return respond(snippet());
+    if (u.pathname.endsWith('/commentThreads')) return respond({ items: [{ snippet: { topLevelComment: { snippet: { textDisplay: '2:40-3:05 Dance Break', likeCount: 0 } } } }] });
+    return respond([record]);
+  };
+  const data = await (await request()).json();
+  assert.equal(data.source, 'mixed');
+  assert.equal(data.segments.filter((s) => s.kind === 'chorus').length, 3);
+  assert.equal(data.segments.filter((s) => s.kind === 'dance-break').length, 1);
+  assert.equal(data.segments.find((s) => s.kind === 'dance-break').start, 160);
 });
