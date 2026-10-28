@@ -1,4 +1,4 @@
-import { parseChapters, parseTimestamps, type AutoSegment, type Chapter, type CommentInput, type Occurrence } from "./highlight-analysis";
+import { normalizeLine, parseChapters, parseTimestamps, type AutoSegment, type Chapter, type CommentInput, type LyricLine, type Occurrence } from "./highlight-analysis";
 
 // Explicit section names only: "pre-chorus", "post chorus", "chorus tutorial" are not chorus boundaries.
 export function isChorusLabel(label: string): boolean {
@@ -6,22 +6,67 @@ export function isChorusLabel(label: string): boolean {
     /\bchorus\b|\bhook\b|ฮุค|คอรัส|후렴/i.test(label);
 }
 
+export function isDanceBreakLabel(label: string): boolean {
+  return !/tutorial|breakdown|สอน|no dance|without/i.test(label) &&
+    /dance[\s-]*break|เบร[กค]แดนซ์|แดนซ์เบร[กค]|댄스\s*브레이크/i.test(label);
+}
+
 export function chapterHighlights(description: string, comments: CommentInput[], duration: number): AutoSegment[] {
   const fromChapters = (chapters: Chapter[], uploader: boolean) => chapters
-    .filter((c) => isChorusLabel(c.label) && c.end - c.start >= 3 && c.end - c.start <= 90)
+    .filter((c) => (isChorusLabel(c.label) || isDanceBreakLabel(c.label)) && c.end - c.start >= 3 && c.end - c.start <= 90)
     .map((c): AutoSegment => ({
       start: c.start, end: c.end,
+      kind: isDanceBreakLabel(c.label) ? "dance-break" : "chorus",
       label: `${c.label} (${uploader ? "ผู้อัปโหลดระบุ" : "คอมเมนต์ระบุ — โปรดตรวจสอบ"})`,
       confidence: uploader ? "high" : "medium",
       evidence: uploader ? "ใช้เวลาเริ่มและจบจาก chapter ของคลิปนี้ ไม่ได้เทียบเสียงหรือท่าเต้น" :
         "ใช้รายการแบ่งท่อนในคอมเมนต์เดียวกัน ทั้งจุดเริ่มและขอบเขตถัดไป ยังไม่ได้ยืนยันด้วยเสียงหรือภาพ",
     }));
   const official = fromChapters(parseChapters(description, duration), true);
-  if (official.length) return official;
   // A full section list provides an end boundary; an isolated "1:02 chorus" does not.
   const lists = comments.map((c) => parseChapters(c.text, duration))
-    .filter((chapters) => chapters.length >= 4 && chapters.filter((c) => isChorusLabel(c.label)).length >= 2);
-  return lists.map((chapters) => fromChapters(chapters, false)).sort((a, b) => b.length - a.length)[0] ?? [];
+    .filter((chapters) => chapters.some((c) => c.explicitEnd && (isChorusLabel(c.label) || isDanceBreakLabel(c.label))) ||
+      (chapters.length >= 2 && chapters.some((c) => isDanceBreakLabel(c.label))) ||
+      (chapters.length >= 4 && chapters.filter((c) => isChorusLabel(c.label)).length >= 2));
+  const listed = lists.map((chapters) => fromChapters(chapters, false)).sort((a, b) => b.length - a.length)[0] ?? [];
+  return mergeHighlights(official, mergeHighlights(listed, supportedDanceBreakRanges(comments, duration)));
+}
+
+export function mergeHighlights(primary: AutoSegment[], extra: AutoSegment[]): AutoSegment[] {
+  return [...primary, ...extra.filter((candidate) => !primary.some((s) =>
+    Math.min(s.end, candidate.end) > Math.max(s.start, candidate.start)))]
+    .sort((a, b) => a.start - b.start);
+}
+
+/** Named dance-break cues + an explicit range + independent timestamp support.
+ * Never invent an end by adding a fixed number of seconds to a popular timestamp.
+ */
+function supportedDanceBreakRanges(comments: CommentInput[], duration: number): AutoSegment[] {
+  const clock = "((?:\\d{1,2}:)?\\d{1,2}:[0-5]\\d)";
+  const name = "(?:dance[\\s-]*break|เบร[กค]แดนซ์|댄스\\s*브레이크)";
+  const before = new RegExp(`${name}[^\\d\\n]{0,20}${clock}`, "gi");
+  const after = new RegExp(`${clock}[^\\d\\n]{0,10}${name}(?![^\\n]{0,8}\\d{1,2}:[0-5]\\d)`, "gi");
+  const ranges = new RegExp(`${clock}\\s*[-–—~〜]\\s*${clock}`, "g");
+  const cues = comments.flatMap((c) => {
+    if (/tutorial|สอน|no dance|without/i.test(c.text)) return [];
+    return [...c.text.matchAll(before), ...c.text.matchAll(after)]
+      .flatMap((m) => parseTimestamps(m[0], duration));
+  });
+  const out: AutoSegment[] = [];
+  for (const comment of comments) for (const range of comment.text.matchAll(ranges)) {
+    const times = parseTimestamps(range[0], duration);
+    if (times.length !== 2) continue;
+    const [start, end] = times;
+    if (end - start < 3 || end - start > 90 || !cues.some((cue) => Math.abs(cue - start) <= 5)) continue;
+    const supporters = new Set(comments.filter((c) => parseTimestamps(c.text, duration)
+      .some((stamp) => Math.abs(stamp - start) <= 2)).map((c) => normalizeLine(c.text)));
+    if (supporters.size < 3 || out.some((s) => Math.min(s.end, end) > Math.max(s.start, start))) continue;
+    out.push({ start, end, kind: "dance-break", confidence: "medium",
+      label: "เบรคแดนซ์ (คอมเมนต์ระบุ — โปรดตรวจสอบ)",
+      evidence: `มีคอมเมนต์ระบุ dance break ใกล้จุดนี้ พร้อมช่วงเริ่ม–จบที่ระบุไว้และไทม์สแตมป์สนับสนุน ${supporters.size} ข้อความ ไม่ได้วิเคราะห์เสียงหรือภาพ`,
+    });
+  }
+  return out;
 }
 
 /** Align by multiple explicitly labelled hook timestamps, never by arbitrary popular timestamps. */
@@ -48,6 +93,33 @@ export function inferChorusOffset(occurrences: Occurrence[], texts: string[], du
   candidates.sort((a, b) => b.count - a.count || a.error - b.error);
   const best = candidates[0];
   if (!best || candidates.some((c) => c.count === best.count && Math.abs(c.offset - best.offset) > 3 && c.error <= best.error + 0.5)) return undefined;
+  return best.offset;
+}
+
+/** Match timestamped lyric quotes to actual LRC lines, not unrelated popular moments. */
+export function inferLyricOffset(lines: LyricLine[], texts: string[], duration: number): number | undefined {
+  const anchors: { stamp: number; songTime: number; lyric: string }[] = [];
+  for (const text of texts) for (const row of text.split(/\r?\n/)) {
+    const stamps = parseTimestamps(row, duration);
+    if (stamps.length !== 1) continue;
+    const quote = ` ${normalizeLine(row)} `;
+    for (const line of lines) {
+      const lyric = normalizeLine(line.text);
+      if (lyric.length < 12 || lyric.split(" ").length < 3) continue;
+      if (quote.includes(` ${lyric} `)) anchors.push({ stamp: stamps[0], songTime: line.t, lyric });
+    }
+  }
+  if (anchors.length < 2 || anchors.length > 200) return undefined;
+  const candidates = anchors.map((anchor) => {
+    const offset = anchor.stamp - anchor.songTime;
+    const compatible = anchors.filter((a) => Math.abs(a.stamp - a.songTime - offset) <= 1.5);
+    const unique = [...new Map(compatible.map((a) => [a.stamp, a])).values()];
+    if (Math.abs(offset) > 120 || new Set(unique.map((a) => a.lyric)).size < 2 ||
+      Math.max(...unique.map((a) => a.songTime)) - Math.min(...unique.map((a) => a.songTime)) < 20) return undefined;
+    return { offset: unique.reduce((sum, a) => sum + a.stamp - a.songTime, 0) / unique.length, count: unique.length };
+  }).filter((c): c is { offset: number; count: number } => !!c).sort((a, b) => b.count - a.count);
+  const best = candidates[0];
+  if (!best || candidates.some((c) => c.count === best.count && Math.abs(c.offset - best.offset) > 3)) return undefined;
   return best.offset;
 }
 
