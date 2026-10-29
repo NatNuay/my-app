@@ -51,7 +51,8 @@ async function searchLyrics(query: string): Promise<LrclibRecord[] | null> {
     if (!Array.isArray(data)) return null;
     return data.filter((r): r is LrclibRecord => !!r && typeof r.trackName === "string" &&
       typeof r.artistName === "string" && typeof r.duration === "number" &&
-      (typeof r.syncedLyrics === "string" || r.syncedLyrics == null));
+      (typeof r.syncedLyrics === "string" || r.syncedLyrics == null) &&
+      (typeof r.plainLyrics === "string" || r.plainLyrics == null));
   } catch {
     return null;
   }
@@ -133,6 +134,7 @@ export async function GET(req: NextRequest) {
     if (!successfulQueries) return NextResponse.json({ error: "บริการค้นหาเนื้อเพลงไม่พร้อมใช้งาน กรุณาลองอีกครั้ง" }, { status: 503 });
     if (match.status === "none") return fallback("no-lyrics");
     if (match.status === "mismatch") return fallback("duration-mismatch");
+    if (match.status === "untimed") return fallback("untimed-lyrics");
 
     // 3) ท่อนที่เนื้อเพลงวนซ้ำ = ท่อนฮุค
     const occurrences = detectChorus(match.lines, match.record.trackName, match.record.artistName);

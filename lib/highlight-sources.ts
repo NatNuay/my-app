@@ -1,9 +1,9 @@
-import { normalizeLine, parseChapters, parseTimestamps, type AutoSegment, type Chapter, type CommentInput, type LyricLine, type Occurrence } from "./highlight-analysis";
+import { cleanSongTitle, normalizeLine, parseChapters, parseTimestamps, type AutoSegment, type Chapter, type CommentInput, type LyricLine, type Occurrence } from "./highlight-analysis";
 
 // Explicit section names only: "pre-chorus", "post chorus", "chorus tutorial" are not chorus boundaries.
 export function isChorusLabel(label: string): boolean {
-  return !/pre[\s-]*chorus|post[\s-]*chorus|สอน|tutorial|breakdown/i.test(label) &&
-    /\bchorus\b|\bhook\b|ฮุค|คอรัส|후렴/i.test(label);
+  return !/pre[\s-]*chorus|post[\s-]*chorus|(?:ก่อน|หลัง|พรี)\s*(?:ท่อน\s*)?ฮุ[คก]|สอน|tutorial|breakdown/i.test(label) &&
+    /\bchorus\b|\bhook\b|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴/i.test(label);
 }
 
 export function isDanceBreakLabel(label: string): boolean {
@@ -43,7 +43,7 @@ export function mergeHighlights(primary: AutoSegment[], extra: AutoSegment[]): A
  */
 function supportedDanceBreakRanges(comments: CommentInput[], duration: number): AutoSegment[] {
   const clock = "((?:\\d{1,2}:)?\\d{1,2}:[0-5]\\d)";
-  const name = "(?:dance[\\s-]*break|เบร[กค]แดนซ์|댄스\\s*브레이크)";
+  const name = "(?:dance[\\s-]*break|เบร[กค]แดนซ์|แดนซ์เบร[กค]|댄스\\s*브레이크)";
   const before = new RegExp(`${name}[^\\d\\n]{0,20}${clock}`, "gi");
   const after = new RegExp(`${clock}[^\\d\\n]{0,10}${name}(?![^\\n]{0,8}\\d{1,2}:[0-5]\\d)`, "gi");
   const ranges = new RegExp(`${clock}\\s*[-–—~〜]\\s*${clock}`, "g");
@@ -105,8 +105,9 @@ export function inferLyricOffset(lines: LyricLine[], texts: string[], duration: 
     const quote = ` ${normalizeLine(row)} `;
     for (const line of lines) {
       const lyric = normalizeLine(line.text);
-      if (lyric.length < 12 || lyric.split(" ").length < 3) continue;
-      if (quote.includes(` ${lyric} `)) anchors.push({ stamp: stamps[0], songTime: line.t, lyric });
+      const thai = /[\u0e00-\u0e7f]/.test(lyric);
+      if (lyric.length < 12 || (!thai && lyric.split(" ").length < 3)) continue;
+      if (thai ? quote.includes(lyric) : quote.includes(` ${lyric} `)) anchors.push({ stamp: stamps[0], songTime: line.t, lyric });
     }
   }
   if (anchors.length < 2 || anchors.length > 200) return undefined;
@@ -127,5 +128,21 @@ export function inferLyricOffset(lines: LyricLine[], texts: string[], duration: 
 export function lyricQueries(title: string, cleaned: string): string[] {
   const quoted = /['"‘“]([^'"’”]+)['"’”]/.exec(title)?.[1]?.trim();
   const latin = cleaned.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g, " ").trim();
-  return [...new Set([cleaned, latin, quoted].filter((q): q is string => !!q && q.length >= 2))].slice(0, 3);
+  const base = [cleaned, latin, quoted].filter((q): q is string => !!q && q.length >= 2);
+  const separated = title.split(/\s*[:|]\s*|\s+[-–—/]\s+/).slice(1)
+    .map(cleanSongTitle).filter((part) => part.length >= 3 && !/^by\s/i.test(part));
+  if (/[\u0e00-\u0e7f]/.test(title)) {
+    // Thai track names must survive English aliases, artist prefixes and sponsor suffixes.
+    const thaiNames = [...(quoted ?? title).matchAll(/[\u0e00-\u0e7f]+(?:\s+[\u0e00-\u0e7f]+)*/g)]
+      .map((m) => m[0].trim()).filter((name) => name.length >= 3 && !/^(?:สอนเต้น|ฝึกเต้น|เต้นตาม|ซ้อมเต้น|เวอร์ชั่น|เวอร์ชัน)$/.test(name));
+    const aliases = [...title.matchAll(/\(([^()]*)\)/g)].map((m) => m[1].trim())
+      .filter((name) => name.length >= 3 && !/\b(?:practice|mirrored?|official|video|version|ver|4k|hd)\b|สอนเต้น/i.test(name));
+    return [...new Set([quoted, ...thaiNames, ...aliases, ...base, ...separated].filter((q): q is string => !!q && q.length >= 2))].slice(0, 6);
+  }
+  // A title such as [CHARM - ARTIST] should not disappear with formatting brackets.
+  if (!cleaned) {
+    const bracket = /\[([^\]]+)\]/.exec(title)?.[1]?.trim();
+    if (bracket && !/^(?:dance practice|mirrored|official|4k|hd)$/i.test(bracket)) base.push(bracket);
+  }
+  return [...new Set([...base, ...separated])].slice(0, 3);
 }

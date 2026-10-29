@@ -57,6 +57,7 @@ export interface LrclibRecord {
   artistName: string;
   duration: number;
   syncedLyrics?: string | null;
+  plainLyrics?: string | null;
   instrumental?: boolean;
 }
 
@@ -111,7 +112,7 @@ export function parseChapters(description: string, durationSec: number): Chapter
   const raw: { start: number; end?: number; label: string }[] = [];
   const clock = "((?:\\d{1,2}:)?\\d{1,2}:[0-5]\\d)";
   const range = new RegExp(`^(.*?)${clock}\\s*[-–—~〜]\\s*${clock}\\s*(.*)$`);
-  const labelFirst = new RegExp(`^(.+?)\\s+${clock}\\s*$`);
+  const labelFirst = new RegExp(`^(.+?)\\s*${clock}\\s*$`);
   for (const line of description.split(/\r?\n/)) {
     const r = range.exec(line.trim());
     if (r) {
@@ -192,7 +193,24 @@ export function parseSyncedLyrics(lrc: string): LyricLine[] {
 const PUNCT_RE = /[\s\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u00bf\u2000-\u206f\u3000-\u303f]+/g;
 
 export function normalizeLine(s: string): string {
-  return s.normalize("NFKC").toLowerCase().replace(PUNCT_RE, " ").trim();
+  return s.normalize("NFKC").replace(/[\u200b-\u200d\ufeff]/g, "").toLowerCase().replace(PUNCT_RE, " ").trim()
+    .replace(/([\u0e00-\u0e7f])\s+(?=[\u0e00-\u0e7f])/g, "$1");
+}
+
+/** Song names may be Thai with an English alias; a version name is not an alias. */
+export function trackNameVariants(trackName: string, artistName = ""): string[] {
+  const artist = normalizeLine(artistName.split(/,|&|feat\.?|\(/i)[0] ?? "");
+  const version = /official|audio|remix|acoustic|version|\bver\b|\blive\b|เวอร์ชัน|เวอร์ชั่น/i;
+  const aliases = [...trackName.matchAll(/\(([^()]*)\)|（([^（）]*)）/g)]
+    .map((m) => m[1] ?? m[2]).filter((value) => !version.test(value));
+  const names = [trackName, trackName.replace(/\([^)]*\)|（[^）]*）/g, " "), ...aliases]
+    .map((name) => {
+      let normalized = normalizeLine(name);
+      if (artist && normalized.startsWith(`${artist} `)) normalized = normalized.slice(artist.length).trim();
+      if (artist && normalized.endsWith(` ${artist}`)) normalized = normalized.slice(0, -artist.length).trim();
+      return normalized;
+    }).filter((name) => name.length >= 3 && name !== artist);
+  return [...new Set(names)];
 }
 
 /** บรรทัดที่มีเนื้อหาพอจะใช้เทียบการซ้ำ: ตัดคำแทรกอย่าง "oh oh oh" "yeah yeah" "la la la" ออก */
@@ -209,11 +227,9 @@ function isInformative(n: string): boolean {
  * คืนเวลาเริ่ม-จบของแต่ละรอบ (เวลาตามเพลงต้นฉบับ) หรือ [] ถ้าไม่พบ
  */
 export function detectChorus(lines: LyricLine[], trackName = "", artistName = ""): Occurrence[] {
-  let track = normalizeLine(cleanSongTitle(trackName));
-  const artist = normalizeLine(artistName.split(/,|&|feat\.?|\(/i)[0] ?? "");
-  if (artist && track.startsWith(`${artist} `)) track = track.slice(artist.length).trim();
-  if (artist && track.endsWith(` ${artist}`)) track = track.slice(0, -artist.length).trim();
-  const mentionsTrack = (text: string) => track.length >= 3 && ` ${text} `.includes(` ${track} `);
+  const trackNames = trackNameVariants(trackName, artistName);
+  const mentionsTrack = (text: string) => trackNames.some((track) => /[\u0e00-\u0e7f]/.test(track)
+    ? text.includes(track) : ` ${text} `.includes(` ${track} `));
   const n = lines.length;
   if (n < 6) return [];
   const norm = lines.map((l) => normalizeLine(l.text));
@@ -314,6 +330,7 @@ export type LyricsMatch =
   | { status: "ok"; record: LrclibRecord; lines: LyricLine[] }
   | { status: "alignment"; record: LrclibRecord; lines: LyricLine[] }
   | { status: "mismatch" } // เจอเพลงแต่ความยาวไม่ตรงกับคลิป
+  | { status: "untimed" } // มีเนื้อเพลง แต่ไม่มีเวลาของแต่ละบรรทัด
   | { status: "none" };
 
 /**
@@ -332,6 +349,12 @@ export function matchLyrics(
   let nameMatched = false;
   let best: { record: LrclibRecord; delta: number } | null = null;
   let unaligned: { record: LrclibRecord; delta: number } | null = null;
+  const hasUntimedLyrics = records.some((rec) => {
+    if (rec.syncedLyrics || !rec.plainLyrics?.trim() || rec.instrumental) return false;
+    const artist = normalizeForMatch(rec.artistName.split(/,|&|feat\.?|\(/i)[0] ?? "");
+    return artist && containsName(extra, artist) && trackNameVariants(rec.trackName, rec.artistName)
+      .some((name) => containsName(title, name));
+  });
 
   // LRCLIB may contain duplicate timed lyrics with contradictory duration metadata.
   // Group by actual timestamps/text so a mistyped duration cannot win by being closest to the clip.
@@ -364,15 +387,16 @@ export function matchLyrics(
 
   for (const { record: rec } of candidates) {
     if (!rec.syncedLyrics || rec.instrumental || !Number.isFinite(rec.duration) || rec.duration <= 0) continue;
-    const track = normalizeForMatch(rec.trackName);
-    if (!containsName(title, track)) continue;
+    if (!trackNameVariants(rec.trackName, rec.artistName).some((name) => containsName(title, name))) continue;
 
     const delta = Math.abs(rec.duration - clipDurationSec);
     const firstArtist = normalizeForMatch(rec.artistName.split(/,|&|feat\.?|\(/i)[0] ?? "");
     const artistWords = firstArtist.split(" ").filter((w) => w.length >= 3);
     const artistOk =
       containsName(extra, firstArtist) || (artistWords.length > 0 && artistWords.every((w) => containsName(extra, w)));
-    if (!artistOk && delta > 2) continue;
+    // An alternate song title is useful across languages but cannot stand in for artist identity.
+    const fullNameMatched = containsName(title, normalizeForMatch(rec.trackName));
+    if (!artistOk && (delta > 2 || !fullNameMatched)) continue;
 
     nameMatched = true;
     if (artistOk && delta <= 120 && (!unaligned || delta < unaligned.delta)) unaligned = { record: rec, delta };
@@ -387,7 +411,7 @@ export function matchLyrics(
     const lines = parseSyncedLyrics(unaligned.record.syncedLyrics ?? "");
     if (lines.length >= 6) return { status: "alignment", record: unaligned.record, lines };
   }
-  return nameMatched ? { status: "mismatch" } : { status: "none" };
+  return nameMatched ? { status: "mismatch" } : hasUntimedLyrics ? { status: "untimed" } : { status: "none" };
 }
 
 // ---------- สร้างท่อนที่จะแสดง ----------

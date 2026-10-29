@@ -126,3 +126,14 @@ test('a bounded dance break does not replace the lyric chorus results', async ()
   assert.equal(data.segments.filter((s) => s.kind === 'dance-break').length, 1);
   assert.equal(data.segments.find((s) => s.kind === 'dance-break').start, 160);
 });
+
+test('plain lyrics have an explicit no-timestamps outcome, not fabricated highlights', async () => {
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith('/videos')) return respond(snippet());
+    if (u.pathname.endsWith('/commentThreads')) return respond({}, 403);
+    return respond([{ ...record, syncedLyrics: null, plainLyrics: 'เนื้อเพลงที่ไม่มีเวลาประกอบแต่ละบรรทัด' }]);
+  };
+  const response = await request(); const data = await response.json();
+  assert.equal(response.status, 200); assert.equal(data.reason, 'untimed-lyrics'); assert.deepEqual(data.segments, []);
+});
