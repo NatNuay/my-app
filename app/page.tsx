@@ -7,6 +7,8 @@ import HeartButton from "@/components/heart-button";
 import PlaylistPanel from "@/components/playlist-panel";
 import YouTubePlayer from "@/components/youtube-player";
 import YouTubeSearch from "@/components/youtube-search";
+import WatchHistory from "@/components/watch-history";
+import { useWatchHistory } from "@/lib/use-watch-history";
 import { useAutoHighlights } from "@/lib/auto-highlights";
 import { isLikedId, usePlaylists, type PlayMode, type Playlist } from "@/lib/playlist";
 import type { VideoItem } from "@/lib/youtube";
@@ -45,6 +47,8 @@ interface NavEntry {
 export default function Page() {
   const pl = usePlaylists();
   const [current, setCurrent] = useState<VideoItem | null>(null);
+  const visits = useWatchHistory();
+  const recordVisit = visits.record;
   const [selectedId, setSelectedId] = useState<string | null>(null); // playlist ที่เปิดดู/เป็นปลายทางของปุ่ม “+ playlist”
   const [sourceId, setSourceId] = useState<string | null>(null); // playlist ที่กำลังเล่นต่อเนื่องอยู่ (null = เล่นคลิปเดี่ยวจากการค้นหา)
   const [mode, setMode] = useState<PlayMode>("sequential");
@@ -68,6 +72,7 @@ export default function Page() {
     const onPop = (e: PopStateEvent) => {
       const mv = (e.state as Partial<NavEntry> | null)?.mv;
       const video = mv?.video ?? null;
+      if (video) recordVisit(video);
       setCurrent(video);
       setSourceId(video ? mv?.sourceId ?? null : null);
     };
@@ -80,7 +85,7 @@ export default function Page() {
     }
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [recordVisit]);
 
   // ถ้า id ที่จำไว้ถูกลบไปแล้ว จะตกมาที่ playlist แรก/null เองโดยไม่ต้อง sync state
   // ค่าเริ่มต้นเป็น playlist ของผู้ใช้อันแรก (ไม่ใช่ “ถูกใจ”) ถ้ายังไม่มีเลยจึงตกมาที่ “ถูกใจ”
@@ -102,6 +107,7 @@ export default function Page() {
   }
 
   function play(video: VideoItem, fromPlaylistId: string | null, scroll = true, nav: "push" | "replace" = "push") {
+    recordVisit(video);
     const entry: NavEntry = { mv: { video, sourceId: fromPlaylistId } };
     if (nav === "push") window.history.pushState(entry, "");
     else window.history.replaceState(entry, "");
@@ -250,6 +256,9 @@ export default function Page() {
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
         </section>
       )}
+
+      <WatchHistory entries={visits.entries} loaded={visits.loaded} error={visits.error}
+        activeId={current?.id} onPlay={(video) => play(video, null)} onRemove={visits.remove} onClear={visits.clear} />
 
       <PlaylistPanel
         key={`pl-${homeKey}`}
