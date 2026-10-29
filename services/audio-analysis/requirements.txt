@@ -1,0 +1,7 @@
+# Install PyTorch CPU and build NATTEN first; see README.
+numpy==1.26.4
+torch==2.4.1
+torchaudio==2.4.1
+natten==0.17.1
+yt-dlp[default]==2026.10.26
+allin1==1.1.0
