@@ -1,6 +1,7 @@
 // lib/auto-highlights.ts
 // ดึงท่อนฮุคที่ระบบวิเคราะห์ให้ของคลิปที่กำลังเล่น (เรียก /api/youtube/highlights)
 import { useEffect, useState } from "react";
+import { combineAudioHighlights } from "./audio-highlights";
 import type { AutoSegment, HighlightsResponse } from "@/lib/highlight-analysis";
 
 type Status = "idle" | "loading" | "ready" | "none" | "error";
@@ -22,7 +23,9 @@ export function useAutoHighlights(videoId: string | undefined): {
   status: Status;
   segments: AutoSegment[];
   reason?: string;
+  audioStatus?: string;
 } {
+  const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string }>({ id: "", segments: [], pending: false, status: "idle" });
   const [state, setState] = useState<State>({ status: "idle", segments: NO_SEGMENTS });
 
   useEffect(() => {
@@ -52,7 +55,38 @@ export function useAutoHighlights(videoId: string | undefined): {
     return () => ac.abort();
   }, [videoId]);
 
+  // Independent background analysis: playback never waits for the worker.
+  useEffect(() => {
+    if (!videoId) return;
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const started = Date.now();
+    setAudio({ id: videoId, segments: [], pending: true, status: "processing" });
+    async function poll() {
+      try {
+        const r = await fetch(`/api/youtube/audio-highlights?v=${encodeURIComponent(videoId!)}`, { signal: ac.signal, cache: "no-store" });
+        if (!r.ok) throw Error("Audio service unavailable");
+        const data = await r.json();
+        if (ac.signal.aborted) return;
+        if (["queued", "processing", "busy"].includes(data.status) && Date.now() - started < 12 * 60 * 1000) {
+          timer = setTimeout(poll, 4000);
+          return;
+        }
+        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, status: ["queued", "processing", "busy"].includes(data.status) ? "failed" : data.status });
+      } catch {
+        if (!ac.signal.aborted) setAudio({ id: videoId!, segments: [], pending: false, status: "failed" });
+      }
+    }
+    void poll();
+    return () => { ac.abort(); clearTimeout(timer); };
+  }, [videoId]);
+
   // ผลของคลิปก่อนหน้าต้องไม่โผล่ค้างตอนเปลี่ยนคลิป
-  if (!videoId || state.id !== videoId) return { status: videoId ? "loading" : "idle", segments: NO_SEGMENTS };
-  return { status: state.status, segments: state.segments, reason: state.reason };
+  if (!videoId || (state.id !== videoId && audio.id !== videoId)) return { status: videoId ? "loading" : "idle", segments: NO_SEGMENTS };
+  const audioSegments = audio.id === videoId ? audio.segments : [];
+  const segments = combineAudioHighlights(state.id === videoId ? state.segments : NO_SEGMENTS, audioSegments);
+  const audioStatus = audio.id === videoId ? audio.status : undefined;
+  if (segments.length) return { status: "ready", segments, audioStatus };
+  if (audio.id === videoId && audio.pending) return { status: "loading", segments: NO_SEGMENTS, audioStatus };
+  return { status: state.id === videoId ? state.status : "loading", segments, reason: state.id === videoId ? state.reason : undefined, audioStatus };
 }

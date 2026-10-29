@@ -251,6 +251,8 @@ export default function Page() {
             loopOne={mode === "single"}
             highlights={auto.segments}
           />
+          {auto.audioStatus === "processing" && auto.status === "ready" && <p><small>กำลังวิเคราะห์เสียงเบื้องหลัง สามารถเล่นคลิปต่อได้…</small></p>}
+          {auto.audioStatus === "failed" && <p><small>วิเคราะห์เสียงของคลิปนี้ไม่ได้ จึงใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
           {auto.status === "loading" && <small>กำลังวิเคราะห์ท่อนฮุคของคลิปนี้…</small>}
           {auto.status === "none" && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
