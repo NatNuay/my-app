@@ -37,7 +37,7 @@ export function useAutoHighlights(videoId: string | undefined): {
     }
     setState({ id: videoId, status: "loading", segments: NO_SEGMENTS });
     const ac = new AbortController();
-    fetch(`/api/youtube/highlights?v=${encodeURIComponent(videoId)}`, { signal: ac.signal })
+    fetch(`/api/youtube/highlights?v=${encodeURIComponent(videoId)}`, { signal: AbortSignal.any([ac.signal, AbortSignal.timeout(30000)]) })
       .then(async (r) => {
         const data = (await r.json().catch(() => null)) as (HighlightsResponse & { error?: string }) | null;
         if (!data) throw new Error(`เซิร์ฟเวอร์ตอบกลับผิดรูปแบบ (HTTP ${r.status}) ตรวจว่ามีไฟล์ app/api/youtube/highlights/route.ts`);
@@ -64,15 +64,17 @@ export function useAutoHighlights(videoId: string | undefined): {
     setAudio({ id: videoId, segments: [], pending: true, status: "processing" });
     async function poll() {
       try {
-        const r = await fetch(`/api/youtube/audio-highlights?v=${encodeURIComponent(videoId!)}`, { signal: ac.signal, cache: "no-store" });
+        const r = await fetch(`/api/youtube/audio-highlights?v=${encodeURIComponent(videoId!)}`, { signal: AbortSignal.any([ac.signal, AbortSignal.timeout(8000)]), cache: "no-store" });
         if (!r.ok) throw Error("Audio service unavailable");
         const data = await r.json();
         if (ac.signal.aborted) return;
-        if (["queued", "processing", "busy"].includes(data.status) && Date.now() - started < 12 * 60 * 1000) {
-          timer = setTimeout(poll, 4000);
+        if (["queued", "processing", "busy"].includes(data.status) && Date.now() - started < 210000) {
+          setAudio({ id: videoId!, segments: [], pending: true,
+            status: data.status === "processing" ? (data.stage ?? "processing") : data.status });
+          timer = setTimeout(poll, 2000);
           return;
         }
-        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, status: ["queued", "processing", "busy"].includes(data.status) ? "failed" : data.status });
+        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, status: ["queued", "processing", "busy"].includes(data.status) ? "timeout" : data.reason === "timeout" ? "timeout" : data.status });
       } catch {
         if (!ac.signal.aborted) setAudio({ id: videoId!, segments: [], pending: false, status: "failed" });
       }
