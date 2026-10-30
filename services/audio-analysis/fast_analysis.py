@@ -180,6 +180,8 @@ def repeated_sections(data, duration, diagnostics=None):
 
 
 def analyze_file(path, root=None):
+    if root is not None:
+        (root / "stage").write_text("decoding")
     samples = decode(Path(path))
     if root is not None:
         (root / "stage").write_text("features")

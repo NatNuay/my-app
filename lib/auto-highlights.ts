@@ -29,8 +29,9 @@ export function useAutoHighlights(videoId: string | undefined): {
   reason?: string;
   audioStatus?: string;
   audioStage?: string;
+  audioFailure?: string;
 } {
-  const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string; stage?: string; engine?: string }>({ id: "", segments: [], pending: false, status: "idle" });
+  const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string; stage?: string; engine?: string; failureReason?: string }>({ id: "", segments: [], pending: false, status: "idle" });
   const [state, setState] = useState<State>({ status: "idle", segments: NO_SEGMENTS });
   const [shown, setShown] = useState<{ id?: string; segments: AutoSegment[] }>({ segments: NO_SEGMENTS });
 
@@ -81,7 +82,7 @@ export function useAutoHighlights(videoId: string | undefined): {
           timer = setTimeout(poll, 2000);
           return;
         }
-        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, engine: data.engine, stage: data.stage, status: ["queued", "processing", "busy"].includes(data.status) ? "timeout" : data.reason === "timeout" ? "timeout" : data.status });
+        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, engine: data.engine, stage: data.stage, failureReason: data.reason, status: ["queued", "processing", "busy"].includes(data.status) ? "timeout" : data.reason === "timeout" ? "timeout" : data.status });
       } catch {
         if (!ac.signal.aborted) setAudio({ id: videoId!, segments: [], pending: false, status: "failed" });
       }
@@ -115,9 +116,10 @@ export function useAutoHighlights(videoId: string | undefined): {
   if (!videoId) return { status: "idle", segments: NO_SEGMENTS };
   const audioStatus = audio.id === videoId ? audio.status : undefined;
   const audioStage = audio.id === videoId ? audio.stage : undefined;
-  if (segments.length) return { status: "ready", segments, audioStatus, audioStage };
-  if (audio.id === videoId && audio.pending) return { status: "loading", segments: NO_SEGMENTS, audioStatus, audioStage };
+  const audioFailure = audio.id === videoId ? audio.failureReason : undefined;
+  if (segments.length) return { status: "ready", segments, audioStatus, audioStage, audioFailure };
+  if (audio.id === videoId && audio.pending) return { status: "loading", segments: NO_SEGMENTS, audioStatus, audioStage, audioFailure };
   const fastEmpty = audio.id === videoId && audio.engine === "fast" && audio.status === "ready" && state.id === videoId && state.status !== "loading";
   return { status: fastEmpty ? "none" : state.id === videoId ? state.status : "loading", segments,
-    reason: fastEmpty ? "fast-no-repeat" : state.id === videoId ? state.reason : undefined, audioStatus, audioStage };
+    reason: fastEmpty ? "fast-no-repeat" : state.id === videoId ? state.reason : undefined, audioStatus, audioStage, audioFailure };
 }
