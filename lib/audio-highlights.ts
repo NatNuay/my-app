@@ -1,4 +1,4 @@
-import type { AutoSegment } from "./highlight-analysis";
+import type { AutoSegment, HighlightsResponse } from "./highlight-analysis";
 
 /** Treat the model output as untrusted. Never relabel instrumental breaks as dance breaks. */
 export function audioChoruses(value: unknown, engine: "fast" | "full" = "full"): AutoSegment[] {
@@ -31,6 +31,21 @@ export function combineAudioHighlights(metadata: AutoSegment[], audio: AutoSegme
   if (!audio.length || (preferMetadata && metadata.some(item => item.kind !== "dance-break"))) return metadata;
   return [...audio, ...metadata.filter(item => item.kind === "dance-break" &&
     !audio.some(a => a.start < item.end && item.start < a.end))].sort((a, b) => a.start - b.start);
+}
+
+/** Resolve source priority BEFORE the first snapshot is published. A lyric
+ * repeat may be a pre-chorus or only the sung middle of an instrumental hook.
+ * When fast audio is running, wait for that bounded result instead of locking
+ * the earlier lyric guess. Existing chapter/comment boundaries remain usable.
+ */
+export function selectHighlightProposal(metadata: AutoSegment[], audio: AutoSegment[], options: {
+  pending: boolean; engine?: string; source?: HighlightsResponse["source"];
+}): AutoSegment[] {
+  const explicit = options.source === "chapters" || options.source === "comments";
+  if (options.pending && options.engine !== "full" && !explicit) {
+    return metadata.filter(segment => segment.kind === "dance-break");
+  }
+  return combineAudioHighlights(metadata, audio, explicit);
 }
 
 /** Keep the first displayed chorus set for this visit. Arrival time is not

@@ -2,6 +2,7 @@ import importlib.util
 import time
 import unittest
 import tempfile
+import json
 from scipy.io import wavfile
 from pathlib import Path
 
@@ -66,6 +67,41 @@ class FastTest(unittest.TestCase):
             self.assertEqual(result["engine"], "fast")
             self.assertEqual(len(result["segments"]), 2)
             self.assertEqual((Path(folder) / "stage").read_text(), "analyzing")
+
+    def test_subsecond_repeat_alignment_does_not_lose_the_start_of_the_hook(self):
+        rng = np.random.default_rng(103)
+        hook = phrase(rng.integers(55, 80, 48), 24, .7)
+        verse1 = phrase(rng.integers(40, 70, 40), 20, .2)
+        verse2 = phrase(rng.integers(40, 70, 40), 20, .2)
+        for delay in (.125, .25, .375):
+            audio = np.concatenate([np.zeros(fast.RATE * 8), verse1, hook, verse2,
+                                    np.zeros(int(fast.RATE * delay)), hook]).astype(np.float32)
+            segments = fast.repeated_sections(fast.features(audio), len(audio) / fast.RATE)
+            self.assertEqual(len(segments), 2)
+            for segment, start in zip(segments, (28, 72 + delay)):
+                self.assertLessEqual(abs(segment["start"] - start), 2)
+                self.assertLessEqual(abs(segment["end"] - (start + 24)), 2)
+
+    def test_unrelated_melodies_do_not_become_repeats_after_jitter_tolerance(self):
+        rng = np.random.default_rng(317)
+        audio = phrase(rng.integers(48, 80, 240), 120, .5)
+        diagnostics = {}
+        segments = fast.repeated_sections(fast.features(audio), 120, diagnostics)
+        self.assertEqual(segments, [])
+        self.assertEqual(diagnostics["reason"], "no-eligible-repeat")
+
+    def test_user_uploaded_real_music_reference_boundaries(self):
+        fixtures = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+        references = json.loads((fixtures / "fast-chorus-reference-cases.json").read_text())
+        for case in references["cases"]:
+            with self.subTest(video=case["videoId"]):
+                with np.load(fixtures / case["featureFixture"], allow_pickle=False) as data:
+                    self.assertEqual(float(data["step"]), fast.STEP)
+                    segments = fast.repeated_sections((data["c"], data["t"], data["energy"], data["active"]), float(data["duration"]))
+                expected = case["expectedOccurrence"]
+                nearest = min(segments, key=lambda s: abs(s["start"] - expected["start"]))
+                self.assertLessEqual(abs(nearest["start"] - expected["start"]), 1)
+                self.assertLessEqual(abs(nearest["end"] - expected["end"]), 1)
 
 
 if __name__ == "__main__":

@@ -6,10 +6,10 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
-from scipy.ndimage import binary_closing, uniform_filter1d
+from scipy.ndimage import binary_closing, uniform_filter1d, maximum_filter1d
 from scipy.signal import find_peaks, stft
 
-STEP = 0.5
+STEP = 0.25
 RATE = 8000
 
 
@@ -61,35 +61,83 @@ def features(samples, rate=RATE):
     t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-6)
     active = e > max(float(e.max()) * 0.05, 1e-8)
     # Silence and a stationary drone must not be presented as repeated hooks.
-    if active.sum() < 30 or np.mean(np.std(chroma, axis=1)) < 0.015:
+    if active.sum() * STEP < 15 or np.mean(np.std(chroma, axis=1)) < 0.015:
         return None
     return c, t, e, active
 
 
-def repeated_sections(data, duration):
+def refine_boundaries(spans, novelty, energy):
+    """Expand a match to nearby audible transitions, never by a fixed offset."""
+    peaks, _ = find_peaks(novelty, distance=max(1, round(1 / STEP)), prominence=0.08)
+    strong = peaks[novelty[peaks] >= 0.4]
+    refined = []
+    radius = round(3 / STEP)
+    for left, right in sorted(spans):
+        before = strong[(strong <= left) & (strong >= left - radius)]
+        after = strong[(strong >= right) & (strong <= right + radius)]
+        start = int(before[-1]) if len(before) else left
+        end = int(after[0]) if len(after) else right
+        # A brief low-energy pickup before a drop is a stronger onset cue than
+        # the center of the broad novelty peak. Keep an adjacent novelty cue
+        # when it is already within 1.5 seconds of the matched start.
+        if left - start > round(1.5 / STEP) or not len(before):
+            lo = max(0, left - round(2.5 / STEP))
+            if left > lo:
+                valley = lo + int(np.argmin(energy[lo:left + 1]))
+                typical = float(np.median(energy[left:min(len(energy), left + round(2 / STEP))]))
+                recovery = energy[valley:min(len(energy), valley + round(1 / STEP) + 1)]
+                if typical > 1e-8 and energy[valley] < typical * 0.25 and recovery.max(initial=0) > typical * 0.5:
+                    start = valley
+                else:
+                    # A rise from a quieter section can mark the onset without
+                    # a silent gap. Do not expand into that preceding section
+                    # just because it has a strong harmonic change nearby.
+                    before_level = float(np.median(energy[max(0, left - round(3 / STEP)):max(1, left - round(1 / STEP))]))
+                    if before_level > 1e-8 and typical > before_level * 1.6:
+                        envelope = uniform_filter1d(energy, size=max(1, round(0.5 / STEP)), mode="nearest")
+                        middle = (before_level + typical) / 2
+                        crossings = np.flatnonzero((envelope[lo:left] < middle) & (envelope[lo + 1:left + 1] >= middle))
+                        if len(crossings):
+                            start = max(start, lo + int(crossings[-1]) + 1)
+        # Do not turn a small matching span into a very long section or overlap
+        # the previous occurrence while expanding.
+        if (end - start) * STEP > 60 or (refined and start < refined[-1][1]):
+            start, end = left, right
+        refined.append((int(start), int(end)))
+    return refined
+
+
+def repeated_sections(data, duration, diagnostics=None):
+    if diagnostics is None:
+        diagnostics = {}
     if data is None:
+        diagnostics["reason"] = "insufficient-or-stationary-audio"
         return []
     c, t, energy, active = data
     n = len(c)
     similarity = np.clip(0.8 * (c @ c.T) + 0.2 * (t @ t.T), -1, 1)
     similarity[~active, :] = -1
     similarity[:, ~active] = -1
+    # Allow at most one quarter-second of alignment jitter. The recurrence
+    # still needs a sustained musical match; do not lower the score threshold.
+    similarity = maximum_filter1d(similarity, size=3, axis=1, mode="constant", cval=-1)
     # Shared structural changes split a recurring pre-chorus + chorus block.
-    smoothed = uniform_filter1d(c, size=6, axis=0, mode="nearest")
-    novelty = np.linalg.norm(np.roll(smoothed, -4, axis=0) - np.roll(smoothed, 4, axis=0), axis=1)
-    novelty[:8] = novelty[-8:] = 0
-    changes, _ = find_peaks(novelty, distance=12, prominence=0.12)
+    smoothed = uniform_filter1d(c, size=round(3 / STEP), axis=0, mode="nearest")
+    novelty = np.linalg.norm(np.roll(smoothed, -round(2 / STEP), axis=0) - np.roll(smoothed, round(2 / STEP), axis=0), axis=1)
+    edge = round(4 / STEP)
+    novelty[:edge] = novelty[-edge:] = 0
+    changes, _ = find_peaks(novelty, distance=round(6 / STEP), prominence=0.12)
     pairs = []
-    for lag in range(max(28, n // 10), n - 24):
+    for lag in range(max(round(14 / STEP), n // 10), n - round(12 / STEP)):
         diagonal = np.diagonal(similarity, offset=lag)
-        smooth = uniform_filter1d(diagonal, size=5, mode="nearest")
-        mask = binary_closing(smooth > 0.78, structure=np.ones(3))
+        smooth = uniform_filter1d(diagonal, size=round(2.5 / STEP) | 1, mode="nearest")
+        mask = binary_closing(smooth > 0.78, structure=np.ones(round(1 / STEP) + 1))
         edges = np.diff(np.r_[False, mask, False].astype(np.int8))
         for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
-            if end - start < 24:
+            if (end - start) * STEP < 12:
                 continue
-            shared = [int(k) for k in changes if start + 24 <= k <= end - 24 and
-                      np.any(np.abs(changes - (k + lag)) <= 2)]
+            shared = [int(k) for k in changes if start + round(12 / STEP) <= k <= end - round(12 / STEP) and
+                      np.any(np.abs(changes - (k + lag)) * STEP <= 1)]
             cuts = [start] + sorted(shared) + [end]
             intervals = [(start, end)] + list(zip(cuts, cuts[1:]))
             for left, right in intervals:
@@ -106,10 +154,11 @@ def repeated_sections(data, duration):
                     continue
                 score = 0.65 * mean + 0.25 * rank + 0.10 * min(length / 28, 1)
                 pairs.append((score, (left, right), (left + lag, right + lag)))
+    diagnostics["candidatePairs"] = len(pairs)
     pairs.sort(reverse=True)
     groups = []
     def same(a, b):
-        return abs(a[0] - b[0]) <= 6 and abs(a[1] - b[1]) <= 6
+        return abs(a[0] - b[0]) * STEP <= 3 and abs(a[1] - b[1]) * STEP <= 3
     for score, first, second in pairs[:300]:
         group = next((g for g in groups if any(same(a, b) for a in (first, second) for b in g["spans"])), None)
         if group is None:
@@ -120,11 +169,14 @@ def repeated_sections(data, duration):
                 group["spans"].append(span)
     candidates = [g for g in groups if 2 <= len(g["spans"]) <= 6 and
                   sum(b - a for a, b in g["spans"]) * STEP < duration * 0.65]
+    diagnostics["eligibleFamilies"] = len(candidates)
     if not candidates:
+        diagnostics["reason"] = "no-eligible-repeat"
         return []
     best = max(candidates, key=lambda g: g["score"] + 0.04 * min(len(g["spans"]) - 2, 2))
+    diagnostics["reason"] = "repeat-found"
     return [{"start": round(float(a * STEP), 2), "end": round(float(min(b * STEP, duration)), 2),
-             "label": "chorus"} for a, b in sorted(best["spans"])]
+             "label": "chorus"} for a, b in refine_boundaries(best["spans"], novelty, energy)]
 
 
 def analyze_file(path, root=None):
@@ -134,4 +186,6 @@ def analyze_file(path, root=None):
     data = features(samples)
     if root is not None:
         (root / "stage").write_text("analyzing")
-    return {"engine": "fast", "segments": repeated_sections(data, len(samples) / RATE)}
+    diagnostics = {}
+    segments = repeated_sections(data, len(samples) / RATE, diagnostics)
+    return {"engine": "fast", "segments": segments, "diagnostics": diagnostics}
