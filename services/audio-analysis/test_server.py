@@ -134,6 +134,17 @@ class JobsTest(unittest.TestCase):
         with patch.dict(worker.os.environ, {"AUDIO_ANALYSIS_THREADS": "0"}):
             self.assertEqual(worker.cpu_threads(), 1)
 
+    def test_fast_and_full_cache_are_separate_and_full_result_is_preferred(self):
+        worker.save_cache("RXQCY_zxz-E", {"engine": "fast", "segments": [{"start": 32, "end": 56, "label": "chorus"}]})
+        with patch.object(worker, "ENGINE", "fast"):
+            self.assertEqual(worker.read_cache("RXQCY_zxz-E")["engine"], "fast")
+        with patch.object(worker, "ENGINE", "full"):
+            self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+        worker.save_cache("RXQCY_zxz-E", {"engine": "full", "segments": [{"start": 64, "end": 80, "label": "chorus"}]})
+        with patch.object(worker, "ENGINE", "fast"):
+            self.assertEqual(worker.read_cache("RXQCY_zxz-E")["engine"], "full")
+            self.assertEqual(worker.read_cache("RXQCY_zxz-E")["segments"][0]["start"], 64)
+
 
 if __name__ == "__main__":
     unittest.main()

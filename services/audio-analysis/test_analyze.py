@@ -24,6 +24,7 @@ class PhaseTest(unittest.TestCase):
                 originals[name] = step
                 setattr(pipeline, name, step)
             def analyze(*args, **kwargs):
+                self.assertEqual(kwargs["device"], "cpu")
                 for name in originals:
                     getattr(pipeline, name)()
                 return types.SimpleNamespace(segments=[types.SimpleNamespace(start=64, end=80.9, label="chorus")])
@@ -33,7 +34,7 @@ class PhaseTest(unittest.TestCase):
             torch.set_num_threads = Mock()
             torch.set_num_interop_threads = Mock()
             with patch.dict(sys.modules, {"allin1": library, "allin1.analyze": pipeline, "torch": torch}), \
-                 patch.dict(runner.os.environ, {"AUDIO_ANALYSIS_THREADS": "6"}), \
+                 patch.dict(runner.os.environ, {"AUDIO_ANALYSIS_THREADS": "6", "AUDIO_ANALYSIS_DEVICE": "cpu", "AUDIO_ANALYSIS_ENGINE": "full"}), \
                  patch.object(runner.subprocess, "run", side_effect=lambda *a, **k: (root / "audio.wav").write_bytes(b"fake")):
                 result = runner.analyze("RXQCY_zxz-E", root)
             self.assertEqual([stage for _, stage in observed], ["separating", "features", "loading-model", "analyzing"])
@@ -42,6 +43,32 @@ class PhaseTest(unittest.TestCase):
             for name, original in originals.items():
                 self.assertIs(getattr(pipeline, name), original)
             self.assertTrue((root / "timings.json").exists())
+
+    def test_cuda_request_fails_explicitly_when_cuda_is_not_available(self):
+        torch = types.ModuleType("torch")
+        torch.set_num_threads = Mock()
+        torch.set_num_interop_threads = Mock()
+        torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.dict(sys.modules, {"torch": torch}), \
+             patch.dict(runner.os.environ, {"AUDIO_ANALYSIS_DEVICE": "cuda"}):
+            with self.assertRaisesRegex(RuntimeError, "CUDA requested but unavailable"):
+                runner.analyze_file(Path("existing.wav"), Path(folder))
+
+    def test_fast_download_path_does_not_import_heavy_models_or_create_wav(self):
+        fast = types.ModuleType("fast_analysis")
+        fast.analyze_file = Mock(return_value={"engine": "fast", "segments": []})
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.dict(sys.modules, {"fast_analysis": fast, "torch": None, "allin1": None}), \
+                 patch.dict(runner.os.environ, {"AUDIO_ANALYSIS_ENGINE": "fast"}), \
+                 patch.object(runner.subprocess, "run", side_effect=lambda *a, **k: (root / "audio.webm").write_bytes(b"fake")) as download:
+                result = runner.analyze("RXQCY_zxz-E", root)
+            self.assertEqual(result["engine"], "fast")
+            self.assertNotIn("--extract-audio", download.call_args.args[0])
+            self.assertEqual(download.call_args.kwargs["timeout"], 12)
+            self.assertFalse((root / "audio.wav").exists())
+            fast.analyze_file.assert_called_once_with(root / "audio.webm", root)
 
 
 if __name__ == "__main__":

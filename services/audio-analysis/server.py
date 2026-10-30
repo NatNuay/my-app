@@ -22,8 +22,11 @@ POOL = ThreadPoolExecutor(max_workers=1)
 RUNNER = Path(__file__).with_name("analyze.py")
 CACHE_DIR = Path(os.environ.get("AUDIO_ANALYSIS_CACHE", str(Path.home() / ".cache" / "muverse-audio")))
 CACHE_TTL = 30 * 86400
-LEASE_SECONDS = 30
-JOB_TIMEOUT = 180
+ENGINE = os.environ.get("AUDIO_ANALYSIS_ENGINE", "fast")
+if ENGINE not in ("fast", "full"):
+    raise ValueError("AUDIO_ANALYSIS_ENGINE must be fast or full")
+LEASE_SECONDS = 8 if ENGINE == "fast" else 30
+JOB_TIMEOUT = 27 if ENGINE == "fast" else 180
 
 
 def cpu_threads():
@@ -48,26 +51,34 @@ def valid_segments(value):
 
 
 def read_cache(video_id):
-    try:
-        path = CACHE_DIR / f"fold0-v1-{video_id}.json"
-        if path.stat().st_size > 100000:
-            return None
-        data = json.loads(path.read_text())
-        if time.time() - data["updated"] > CACHE_TTL or not valid_segments(data["segments"]):
-            return None
-        return {"status": "ready", "segments": data["segments"], "updated": data["updated"], "cached": True}
-    except (OSError, ValueError, TypeError, KeyError):
-        return None
+    # Prefer an already available full-model result. Never label a fast result
+    # as All-In-One, and never let a fast cache overwrite a full-model result.
+    profiles = [("fold0-v1", "full")]
+    if ENGINE == "fast":
+        profiles.append(("fast-repeat-v1", "fast"))
+    for profile, engine in profiles:
+        try:
+            path = CACHE_DIR / f"{profile}-{video_id}.json"
+            if path.stat().st_size > 100000:
+                continue
+            data = json.loads(path.read_text())
+            if time.time() - data["updated"] > CACHE_TTL or not valid_segments(data["segments"]):
+                continue
+            return {"status": "ready", "engine": engine, "segments": data["segments"], "updated": data["updated"], "cached": True}
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return None
 
 
 def save_cache(video_id, job):
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = CACHE_DIR / f"fold0-v1-{video_id}.json"
+        profile = "fast-repeat-v1" if job.get("engine", ENGINE) == "fast" else "fold0-v1"
+        path = CACHE_DIR / f"{profile}-{video_id}.json"
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps({"updated": time.time(), "segments": job["segments"]}))
         temp.replace(path)
-        files = sorted(CACHE_DIR.glob("fold0-v1-*.json"), key=lambda p: p.stat().st_mtime)
+        files = sorted(CACHE_DIR.glob("*-v1-*.json"), key=lambda p: p.stat().st_mtime)
         for old in files[:-500]:
             old.unlink(missing_ok=True)
     except OSError:
@@ -115,6 +126,7 @@ def run_job(video_id):
         # Parent owns temporary audio, so even a hard-killed child leaves no files.
         root = Path(tempdir.name)
         env = os.environ.copy()
+        env["AUDIO_ANALYSIS_ENGINE"] = ENGINE
         threads = str(cpu_threads())
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "AUDIO_ANALYSIS_THREADS"):
             env[name] = threads
@@ -122,6 +134,9 @@ def run_job(video_id):
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
                                    start_new_session=(os.name != "nt"))
         started = time.monotonic()
+        with LOCK:
+            queued_seconds = max(0, time.time() - JOBS[video_id].get("created", time.time()))
+        remaining = max(0, JOB_TIMEOUT - queued_seconds)
         while True:
             try:
                 output, _ = process.communicate(timeout=1)
@@ -129,7 +144,7 @@ def run_job(video_id):
             except subprocess.TimeoutExpired:
                 if abandoned(video_id):
                     raise RuntimeError("cancelled")
-                if time.monotonic() - started > JOB_TIMEOUT:
+                if time.monotonic() - started > remaining:
                     raise RuntimeError("timeout")
                 try:
                     stage = (root / "stage").read_text().strip()
@@ -146,7 +161,7 @@ def run_job(video_id):
         result = json.loads(output.decode().strip().splitlines()[-1])
         if not valid_segments(result["segments"]):
             raise RuntimeError("invalid-result")
-        job = {"status": "ready", "segments": result["segments"]}
+        job = {"status": "ready", "engine": ENGINE, "segments": result["segments"]}
         save_cache(video_id, job)
     except Exception as error:
         if process is not None:
@@ -183,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         if TOKEN and not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN):
             return self.respond(401, {"error": "unauthorized"})
         if self.path == "/health":
-            return self.respond(200, {"status": "ok", "version": "phase-diagnostics-v1", "cpuThreads": cpu_threads()})
+            return self.respond(200, {"status": "ok", "version": "fast-experiment-v1", "engine": ENGINE, "cpuThreads": cpu_threads()})
         return self.respond(404, {"error": "not-found"})
 
     def do_POST(self):
@@ -209,15 +224,16 @@ class Handler(BaseHTTPRequestHandler):
                     JOBS[video_id] = cached
             if video_id not in JOBS:
                 if sum(j["status"] in ("queued", "processing") for j in JOBS.values()) >= 8:
-                    return self.respond(429, {"status": "busy"})
+                    return self.respond(429, {"status": "busy", "engine": ENGINE})
                 if len(JOBS) >= 128:
                     completed = [k for k, j in JOBS.items() if j["status"] in ("ready", "failed")]
                     if completed:
                         del JOBS[min(completed, key=lambda k: JOBS[k]["updated"])]
-                JOBS[video_id] = {"status": "queued", "updated": now, "lastRequested": now}
+                JOBS[video_id] = {"status": "queued", "updated": now, "lastRequested": now, "created": now, "engine": ENGINE}
                 POOL.submit(run_job, video_id)
             JOBS[video_id]["lastRequested"] = now
-            result = {k: v for k, v in JOBS[video_id].items() if k != "lastRequested"}
+            result = {k: v for k, v in JOBS[video_id].items() if k not in ("lastRequested", "created")}
+            result.setdefault("engine", ENGINE)
         self.respond(200, result)
 
 
