@@ -7,6 +7,7 @@ import type { AutoSegment, HighlightsResponse } from "@/lib/highlight-analysis";
 type Status = "idle" | "loading" | "ready" | "none" | "error";
 
 interface Result {
+  source?: HighlightsResponse["source"];
   segments: AutoSegment[];
   reason?: string; // เหตุผลที่ไม่มีท่อน (เช่น tutorial, aerobic) หรือข้อความ error
 }
@@ -26,7 +27,7 @@ export function useAutoHighlights(videoId: string | undefined): {
   audioStatus?: string;
   audioStage?: string;
 } {
-  const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string; stage?: string }>({ id: "", segments: [], pending: false, status: "idle" });
+  const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string; stage?: string; engine?: string }>({ id: "", segments: [], pending: false, status: "idle" });
   const [state, setState] = useState<State>({ status: "idle", segments: NO_SEGMENTS });
 
   useEffect(() => {
@@ -44,7 +45,7 @@ export function useAutoHighlights(videoId: string | undefined): {
         if (!data) throw new Error(`เซิร์ฟเวอร์ตอบกลับผิดรูปแบบ (HTTP ${r.status}) ตรวจว่ามีไฟล์ app/api/youtube/highlights/route.ts`);
         if (!r.ok && !data.error) throw new Error(`เซิร์ฟเวอร์ตอบกลับ HTTP ${r.status}`);
         if (data.error) throw new Error(data.error);
-        const result: Result = { segments: data.segments ?? NO_SEGMENTS, reason: data.reason };
+        const result: Result = { source: data.source, segments: data.segments ?? NO_SEGMENTS, reason: data.reason };
         cache.set(videoId, result);
         setState({ id: videoId, status: result.segments.length > 0 ? "ready" : "none", ...result });
       })
@@ -69,13 +70,13 @@ export function useAutoHighlights(videoId: string | undefined): {
         if (!r.ok) throw Error("Audio service unavailable");
         const data = await r.json();
         if (ac.signal.aborted) return;
-        if (["queued", "processing", "busy"].includes(data.status) && Date.now() - started < 210000) {
+        if (["queued", "processing", "busy"].includes(data.status) && Date.now() - started < (data.engine === "fast" ? 30000 : 210000)) {
           setAudio({ id: videoId!, segments: [], pending: true,
-            stage: data.stage, status: data.status === "processing" ? (data.stage ?? "processing") : data.status });
+            engine: data.engine, stage: data.stage, status: data.status === "processing" ? (data.stage ?? "processing") : data.status });
           timer = setTimeout(poll, 2000);
           return;
         }
-        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, stage: data.stage, status: ["queued", "processing", "busy"].includes(data.status) ? "timeout" : data.reason === "timeout" ? "timeout" : data.status });
+        setAudio({ id: videoId!, segments: data.status === "ready" && Array.isArray(data.segments) ? data.segments : [], pending: false, engine: data.engine, stage: data.stage, status: ["queued", "processing", "busy"].includes(data.status) ? "timeout" : data.reason === "timeout" ? "timeout" : data.status });
       } catch {
         if (!ac.signal.aborted) setAudio({ id: videoId!, segments: [], pending: false, status: "failed" });
       }
@@ -87,10 +88,12 @@ export function useAutoHighlights(videoId: string | undefined): {
   // ผลของคลิปก่อนหน้าต้องไม่โผล่ค้างตอนเปลี่ยนคลิป
   if (!videoId || (state.id !== videoId && audio.id !== videoId)) return { status: videoId ? "loading" : "idle", segments: NO_SEGMENTS };
   const audioSegments = audio.id === videoId ? audio.segments : [];
-  const segments = combineAudioHighlights(state.id === videoId ? state.segments : NO_SEGMENTS, audioSegments);
+  const segments = combineAudioHighlights(state.id === videoId ? state.segments : NO_SEGMENTS, audioSegments, audio.engine === "fast" && ["chapters", "comments"].includes(state.source ?? ""));
   const audioStatus = audio.id === videoId ? audio.status : undefined;
   const audioStage = audio.id === videoId ? audio.stage : undefined;
   if (segments.length) return { status: "ready", segments, audioStatus, audioStage };
   if (audio.id === videoId && audio.pending) return { status: "loading", segments: NO_SEGMENTS, audioStatus, audioStage };
-  return { status: state.id === videoId ? state.status : "loading", segments, reason: state.id === videoId ? state.reason : undefined, audioStatus, audioStage };
+  const fastEmpty = audio.id === videoId && audio.engine === "fast" && audio.status === "ready" && state.id === videoId && state.status !== "loading";
+  return { status: fastEmpty ? "none" : state.id === videoId ? state.status : "loading", segments,
+    reason: fastEmpty ? "fast-no-repeat" : state.id === videoId ? state.reason : undefined, audioStatus, audioStage };
 }

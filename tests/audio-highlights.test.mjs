@@ -89,3 +89,18 @@ test('touching chorus predictions merge, separated rounds and verse gaps remain 
   ]);
   assert.deepEqual(segments.map(s => [s.start, s.end]), [[64, 80.9], [109, 138.1], [169, 199]]);
 });
+
+test('fast candidates are clearly experimental and preserve explicit chapter choruses', () => {
+  const candidates = audioChoruses([{ start: 32, end: 56, label: 'chorus' }], 'fast');
+  assert.match(candidates[0].label, /ทดลอง/);
+  assert.doesNotMatch(candidates[0].evidence, /All-In-One/);
+  const chapters = [{ ...candidates[0], start: 30, end: 58, label: 'Uploader chorus' }];
+  assert.deepEqual(combineAudioHighlights(chapters, candidates, true), chapters);
+});
+test('API passes fast engine provenance and labels to the browser', async () => {
+  process.env.AUDIO_ANALYSIS_URL = 'http://127.0.0.1:8765';
+  globalThis.fetch = async () => Response.json({ status: 'ready', engine: 'fast', segments: [{ start: 32, end: 56, label: 'chorus' }] });
+  const data = await (await request()).json();
+  assert.equal(data.engine, 'fast');
+  assert.match(data.segments[0].label, /ทดลอง/);
+});

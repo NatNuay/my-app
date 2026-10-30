@@ -12,23 +12,39 @@ from pathlib import Path
 
 def analyze(video_id, root):
     (root / "stage").write_text("downloading")
+    fast_mode = os.environ.get("AUDIO_ANALYSIS_ENGINE", "fast") == "fast"
     subprocess.run([
         sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-progress",
         "--no-warnings", "--ignore-config",
         *(["--js-runtimes", "node"] if shutil.which("node") else []), "--socket-timeout", "10",
         "--retries", "0", "--extractor-retries", "0", "--fragment-retries", "0", "--max-filesize", "100M",
         "--match-filter", "duration > 0 & duration <= 900 & !is_live",
-        "-f", "bestaudio/best", "--extract-audio", "--audio-format", "wav",
+        "-f", "bestaudio/best",
+        *([] if fast_mode else ["--extract-audio", "--audio-format", "wav"]),
         "-o", str(root / "audio.%(ext)s"),
         f"https://www.youtube.com/watch?v={video_id}",
-    ], check=True, stdout=sys.stderr, timeout=45)
-    audio = root / "audio.wav"
+    ], check=True, stdout=sys.stderr, timeout=12 if fast_mode else 45)
+    files = [p for p in root.glob("audio.*") if p.suffix not in (".part", ".ytdl")]
+    audio = files[0] if fast_mode and files else root / "audio.wav"
     if not audio.is_file():
         raise RuntimeError("No audio: unsupported duration, live video, or download rejected")
+    if fast_mode:
+        from fast_analysis import analyze_file as fast_analyze
+        return fast_analyze(audio, root)
+    return analyze_file(audio, root)
+
+
+def analyze_file(audio, root):
+    """Same model path for downloaded audio and offline performance checks."""
     (root / "stage").write_text("loading-model")
     import torch
     torch.set_num_threads(max(1, int(os.environ.get("AUDIO_ANALYSIS_THREADS", "6"))))
     torch.set_num_interop_threads(1)
+    device = os.environ.get("AUDIO_ANALYSIS_DEVICE", "cpu")
+    if device not in ("cpu", "cuda"):
+        raise ValueError("AUDIO_ANALYSIS_DEVICE must be cpu or cuda")
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but unavailable in this Python environment")
     import allin1
     # Instrument the pinned library without modifying its installation. The
     # public analyze() combines Demucs, features, weights and inference, so its
@@ -51,12 +67,12 @@ def analyze(video_id, root):
         originals[name] = getattr(pipeline, name)
         setattr(pipeline, name, measured(originals[name], stage))
     try:
-        result = allin1.analyze(str(audio), device="cpu", model="harmonix-fold0", multiprocess=False,
+        result = allin1.analyze(str(audio), device=device, model="harmonix-fold0", multiprocess=False,
                                 demix_dir=str(root / "demix"), spec_dir=str(root / "spec"))
     finally:
         for name, original in originals.items():
             setattr(pipeline, name, original)
-    return {"segments": [dict(start=s.start, end=s.end, label=s.label) for s in result.segments]}
+    return {"engine": "full", "segments": [dict(start=s.start, end=s.end, label=s.label) for s in result.segments]}
 
 
 if __name__ == "__main__":

@@ -19,14 +19,18 @@ export async function GET(req: NextRequest) {
     const response = await fetch(url, { method: "POST", cache: "no-store",
       signal: AbortSignal.timeout(5000), redirect: "error",
       headers: process.env.AUDIO_ANALYSIS_TOKEN ? { Authorization: `Bearer ${process.env.AUDIO_ANALYSIS_TOKEN}` } : {} });
-    if (response.status === 429) return NextResponse.json({ status: "busy", segments: [] });
+    if (response.status === 429) {
+      const busy = await response.json().catch(() => ({}));
+      return NextResponse.json({ status: "busy", ...(busy.engine === "fast" ? { engine: "fast" } : {}), segments: [] });
+    }
     if (!response.ok) throw Error("Service unavailable");
     const data = await response.json();
     if (!["queued", "processing", "ready", "failed"].includes(data.status)) throw Error("Invalid job status");
-    return NextResponse.json({ status: data.status,
+    const engine = data.engine === "fast" ? "fast" : "full";
+    return NextResponse.json({ status: data.status, engine,
       ...(["processing", "failed"].includes(data.status) && ["downloading", "separating", "features", "loading-model", "analyzing"].includes(data.stage) ? { stage: data.stage } : {}),
       ...(data.status === "failed" && data.reason === "timeout" ? { reason: "timeout" } : {}),
-      segments: data.status === "ready" ? audioChoruses(data.segments) : [] });
+      segments: data.status === "ready" ? audioChoruses(data.segments, engine) : [] });
   } catch {
     // Optional audio worker errors must not break existing metadata highlights.
     return NextResponse.json({ status: "failed", segments: [] });
