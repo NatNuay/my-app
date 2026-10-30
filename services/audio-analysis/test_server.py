@@ -153,7 +153,8 @@ class JobsTest(unittest.TestCase):
         (worker.CACHE_DIR / f"{worker.FAST_PROFILE}-RXQCY_zxz-E.json").write_text(json.dumps(empty))
         self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
         old = {"updated": time.time(), "segments": [{"start": 32, "end": 56, "label": "chorus"}]}
-        (worker.CACHE_DIR / "fast-repeat-v1-RXQCY_zxz-E.json").write_text(json.dumps(old))
+        for version in (1, 2):
+            (worker.CACHE_DIR / f"fast-repeat-v{version}-RXQCY_zxz-E.json").write_text(json.dumps(old))
         self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
 
     def test_fast_failure_keeps_specific_reason_and_stage_even_when_it_exits_immediately(self):

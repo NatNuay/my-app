@@ -140,7 +140,8 @@ test('real reference lyric mid-hook/pre-hook guesses are deferred while fast aud
 });
 test('explicit chapters need not wait; unavailable or empty audio still permits lyric fallback', () => {
   const lyric = audioChoruses([{ start: 30, end: 58, label: 'chorus' }]);
-  assert.equal(selectHighlightProposal(lyric, [], { pending: true, engine: 'fast', source: 'chapters' }), lyric);
+  const chapter = [{ ...lyric[0], origin: 'uploader' }];
+  assert.deepEqual(selectHighlightProposal(chapter, [], { pending: true, engine: 'fast', source: 'chapters' }), chapter);
   assert.equal(selectHighlightProposal(lyric, [], { pending: false, source: 'lyrics' }), lyric);
   assert.equal(selectHighlightProposal(lyric, [], { pending: false, engine: 'fast', source: 'lyrics' }), lyric);
   const dance = [{ ...lyric[0], kind: 'dance-break', start: 120, end: 140 }];
@@ -154,4 +155,14 @@ test('download timeout is surfaced without exposing raw worker exception details
   assert.equal(data.reason, 'download-timeout');
   assert.equal(data.stage, 'downloading');
   assert.equal('traceback' in data, false);
+});
+
+test('comment-origin choruses cannot bypass audio priority even inside a chapters or mixed response', () => {
+  const audio = audioChoruses([{ start: 60, end: 90, label: 'chorus' }], 'fast');
+  const comment = { ...audio[0], origin: 'comment', start: 132, end: 137, label: 'Comment guess' };
+  const uploaderBreak = { ...audio[0], origin: 'uploader', kind: 'dance-break', start: 160, end: 180 };
+  const metadata = [comment, uploaderBreak];
+  assert.deepEqual(selectHighlightProposal(metadata, [], { pending: true, engine: 'fast', source: 'chapters' }), [uploaderBreak]);
+  assert.deepEqual(selectHighlightProposal(metadata, audio, { pending: false, engine: 'fast', source: 'comments' }).map(s => s.start), [60, 160]);
+  assert.equal(selectHighlightProposal(metadata, [], { pending: false, engine: 'fast', source: 'comments' }), metadata);
 });
