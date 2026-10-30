@@ -145,6 +145,15 @@ class JobsTest(unittest.TestCase):
             self.assertEqual(worker.read_cache("RXQCY_zxz-E")["engine"], "full")
             self.assertEqual(worker.read_cache("RXQCY_zxz-E")["segments"][0]["start"], 64)
 
+    def test_empty_fast_results_expire_in_five_minutes_and_old_profile_is_ignored(self):
+        worker.CACHE_DIR.mkdir(exist_ok=True)
+        empty = {"updated": time.time() - 301, "segments": []}
+        (worker.CACHE_DIR / f"{worker.FAST_PROFILE}-RXQCY_zxz-E.json").write_text(json.dumps(empty))
+        self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+        old = {"updated": time.time(), "segments": [{"start": 32, "end": 56, "label": "chorus"}]}
+        (worker.CACHE_DIR / "fast-repeat-v1-RXQCY_zxz-E.json").write_text(json.dumps(old))
+        self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+
 
 if __name__ == "__main__":
     unittest.main()

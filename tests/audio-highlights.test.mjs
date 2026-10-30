@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 import { NextRequest } from 'next/server.js';
-import { audioChoruses, combineAudioHighlights, retainDisplayedHighlights } from '../lib/audio-highlights.ts';
+import { audioChoruses, combineAudioHighlights, retainDisplayedHighlights, selectHighlightProposal } from '../lib/audio-highlights.ts';
 
 test('audio chorus times include the original clip intro; instrumental labels are not dance breaks', () => {
   const segments = audioChoruses([
@@ -123,4 +123,26 @@ test('empty or break-only first results still accept later choruses and distinct
   assert.deepEqual(retainDisplayedHighlights([dance], chorus).map(s => s.start), [32, 120]);
   const overlap = { ...dance, start: 40, end: 65 };
   assert.deepEqual(retainDisplayedHighlights(chorus, [overlap, dance]).map(s => s.start), [32, 120]);
+});
+
+test('real reference lyric mid-hook/pre-hook guesses are deferred while fast audio is pending', () => {
+  const cases = JSON.parse(fs.readFileSync(new URL('./fixtures/fast-chorus-reference-cases.json', import.meta.url), 'utf8')).cases;
+  for (const reference of cases) {
+    const lyric = reference.legacyLyricsSegments.map(s => ({ ...s, kind: 'chorus', label: 'Lyrics', confidence: 'high', evidence: 'Captured API result' }));
+    const pending = selectHighlightProposal(lyric, [], { pending: true, engine: 'fast', source: 'lyrics' });
+    assert.deepEqual(pending, []);
+    const audio = audioChoruses([{ ...reference.expectedOccurrence, label: 'chorus' }], 'fast');
+    const ready = selectHighlightProposal(lyric, audio, { pending: false, engine: 'fast', source: 'lyrics' });
+    const displayed = retainDisplayedHighlights(pending, ready);
+    assert.deepEqual(displayed.map(s => [s.start, s.end]), [[reference.expectedOccurrence.start, reference.expectedOccurrence.end]]);
+    assert.equal(retainDisplayedHighlights(displayed, lyric), displayed);
+  }
+});
+test('explicit chapters need not wait; unavailable or empty audio still permits lyric fallback', () => {
+  const lyric = audioChoruses([{ start: 30, end: 58, label: 'chorus' }]);
+  assert.equal(selectHighlightProposal(lyric, [], { pending: true, engine: 'fast', source: 'chapters' }), lyric);
+  assert.equal(selectHighlightProposal(lyric, [], { pending: false, source: 'lyrics' }), lyric);
+  assert.equal(selectHighlightProposal(lyric, [], { pending: false, engine: 'fast', source: 'lyrics' }), lyric);
+  const dance = [{ ...lyric[0], kind: 'dance-break', start: 120, end: 140 }];
+  assert.deepEqual(selectHighlightProposal([...lyric, ...dance], [], { pending: true, engine: 'fast', source: 'mixed' }), dance);
 });

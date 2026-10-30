@@ -1,0 +1,53 @@
+{
+  "description": "User-confirmed chorus references for evaluation only. Production detection must not import this file or use per-video timestamps.",
+  "cases": [
+    {
+      "videoId": "bqzDuRz_P7g",
+      "title": "BLACKPINK - 'Don't Know What To Do' DANCE PRACTICE VIDEO (MOVING VER.)",
+      "channel": "BLACKPINK",
+      "expectedOccurrence": {
+        "start": 66,
+        "end": 96
+      },
+      "reportedProblem": "The chosen highlight starts in the middle of the chorus.",
+      "referenceSource": "User explicitly confirmed 1:06–1:36 is the correct chorus; video identity verified via YouTube Data API.",
+      "validationStatus": "Uploaded audio decoded and analyzed locally. The referenced occurrence is covered by a fast candidate with both boundaries within one second after refinement.",
+      "featureFixture": "fast-chorus-bqzDuRz_P7g-features.npz",
+      "featureSource": "Derived chroma/timbre/energy features from the audio uploaded by the user. No audio samples, lyrics or model weights in this fixture.",
+      "legacyLyricsSegments": [
+        {
+          "start": 75,
+          "end": 91
+        },
+        {
+          "start": 165,
+          "end": 181
+        }
+      ]
+    },
+    {
+      "videoId": "ivoS3HUJB3Q",
+      "title": "BLACKPINK - '붐바야(BOOMBAYAH)' DANCE PRACTICE VIDEO",
+      "channel": "BLACKPINK",
+      "expectedOccurrence": {
+        "start": 84,
+        "end": 116
+      },
+      "reportedProblem": "The chosen highlight selects the pre-chorus instead of the chorus.",
+      "referenceSource": "User explicitly confirmed 1:24–1:56 is the correct chorus; video identity verified via YouTube Data API.",
+      "validationStatus": "Uploaded audio decoded and analyzed locally. The referenced occurrence is covered by a fast candidate with both boundaries within one second after refinement.",
+      "featureFixture": "fast-chorus-ivoS3HUJB3Q-features.npz",
+      "featureSource": "Derived chroma/timbre/energy features from the audio uploaded by the user. No audio samples, lyrics or model weights in this fixture.",
+      "legacyLyricsSegments": [
+        {
+          "start": 56,
+          "end": 81
+        },
+        {
+          "start": 152,
+          "end": 177
+        }
+      ]
+    }
+  ]
+}

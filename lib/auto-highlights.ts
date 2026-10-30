@@ -1,7 +1,7 @@
 // lib/auto-highlights.ts
 // ดึงท่อนฮุคที่ระบบวิเคราะห์ให้ของคลิปที่กำลังเล่น (เรียก /api/youtube/highlights)
 import { useEffect, useMemo, useState } from "react";
-import { combineAudioHighlights, retainDisplayedHighlights } from "./audio-highlights";
+import { selectHighlightProposal, retainDisplayedHighlights } from "./audio-highlights";
 import type { AutoSegment, HighlightsResponse } from "@/lib/highlight-analysis";
 
 type Status = "idle" | "loading" | "ready" | "none" | "error";
@@ -90,11 +90,13 @@ export function useAutoHighlights(videoId: string | undefined): {
     return () => { ac.abort(); clearTimeout(timer); };
   }, [videoId]);
 
-  const proposed = useMemo(() => combineAudioHighlights(
+  const proposed = useMemo(() => selectHighlightProposal(
     state.id === videoId ? state.segments : NO_SEGMENTS,
     audio.id === videoId ? audio.segments : NO_SEGMENTS,
-    audio.engine === "fast" && ["chapters", "comments"].includes(state.source ?? ""),
-  ), [videoId, state.id, state.segments, state.source, audio.id, audio.segments, audio.engine]);
+    { pending: audio.id !== videoId || audio.pending,
+      engine: audio.id === videoId ? audio.engine : undefined,
+      source: state.id === videoId ? state.source : undefined },
+  ), [videoId, state.id, state.segments, state.source, audio.id, audio.segments, audio.engine, audio.pending]);
 
   const previous = shown.id === videoId ? shown.segments : (videoId && displayedCache.get(videoId)) || NO_SEGMENTS;
   const segments = useMemo(() => retainDisplayedHighlights(previous, proposed), [previous, proposed]);
