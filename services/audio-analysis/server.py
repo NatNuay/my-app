@@ -28,6 +28,24 @@ if ENGINE not in ("fast", "full"):
     raise ValueError("AUDIO_ANALYSIS_ENGINE must be fast or full")
 LEASE_SECONDS = 8 if ENGINE == "fast" else 30
 JOB_TIMEOUT = 27 if ENGINE == "fast" else 180
+STAGES = {"downloading", "decoding", "separating", "features", "loading-model", "analyzing"}
+ERROR_CODES = {"dependency-missing", "tool-missing", "download-timeout", "decode-timeout",
+               "download-failed", "decode-failed", "download-rejected", "analysis-failed"}
+
+
+def read_stage(root):
+    try:
+        stage = (root / "stage").read_text().strip()
+        return stage if stage in STAGES else None
+    except OSError:
+        return None
+
+
+def failure_ttl(job):
+    if job.get("reason") == "cancelled":
+        return 0
+    return 60 if job.get("reason") in ("dependency-missing", "tool-missing") else 15
+
 
 
 def cpu_threads():
@@ -122,6 +140,7 @@ def run_job(video_id):
         JOBS.setdefault(video_id, {})
         JOBS[video_id].update(status="processing", stage="downloading", updated=time.time())
     process = None
+    errors = None
     began = time.monotonic()
     tempdir = tempfile.TemporaryDirectory(prefix="muverse-audio-")
     try:
@@ -132,8 +151,9 @@ def run_job(video_id):
         threads = str(cpu_threads())
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "AUDIO_ANALYSIS_THREADS"):
             env[name] = threads
+        errors = (root / "worker.log").open("w+b")
         process = subprocess.Popen([sys.executable, str(RUNNER), video_id, str(root)],
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+                                   stdout=subprocess.PIPE, stderr=errors, env=env,
                                    start_new_session=(os.name != "nt"))
         started = time.monotonic()
         with LOCK:
@@ -149,8 +169,16 @@ def run_job(video_id):
                 if time.monotonic() - started > remaining:
                     raise RuntimeError("timeout")
                 try:
-                    stage = (root / "stage").read_text().strip()
-                    if stage in ("downloading", "separating", "features", "loading-model", "analyzing"):
+                    stage = read_stage(root)
+                    if stage:
+                        # Keep temporary diagnostics bounded even for noisy models.
+                        if errors.seek(0, 2) > 65536:
+                            errors.seek(-16384, 2)
+                            tail = errors.read()
+                            errors.seek(0)
+                            errors.write(tail)
+                            errors.truncate()
+                            errors.flush()
                         with LOCK:
                             previous = JOBS[video_id].get("stage")
                             JOBS[video_id]["stage"] = stage
@@ -158,8 +186,17 @@ def run_job(video_id):
                             print(f"[audio] {video_id}: {stage} (elapsed {time.monotonic() - began:.1f}s)", flush=True)
                 except OSError:
                     pass
+        stage = read_stage(root)
+        if stage:
+            with LOCK:
+                JOBS[video_id]["stage"] = stage
         if process.returncode:
-            raise RuntimeError("audio-analysis-unavailable")
+            try:
+                detail = json.loads(output.decode().strip().splitlines()[-1])
+                reason = detail.get("error")
+            except (ValueError, IndexError, UnicodeError, AttributeError):
+                reason = None
+            raise RuntimeError(reason if reason in ERROR_CODES else "audio-analysis-unavailable")
         result = json.loads(output.decode().strip().splitlines()[-1])
         if not valid_segments(result["segments"]):
             raise RuntimeError("invalid-result")
@@ -171,9 +208,22 @@ def run_job(video_id):
     except Exception as error:
         if process is not None:
             stop_process(process)
-        reason = str(error) if str(error) in ("cancelled", "timeout") else "audio-analysis-unavailable"
+        stage = read_stage(Path(tempdir.name))
+        if stage:
+            with LOCK:
+                JOBS[video_id]["stage"] = stage
+        reason = str(error) if str(error) in ERROR_CODES | {"cancelled", "timeout"} else "audio-analysis-unavailable"
         job = {"status": "failed", "reason": reason, "stage": JOBS.get(video_id, {}).get("stage", "unknown")}
     finally:
+        if errors is not None:
+            if job.get("status") == "failed":
+                errors.seek(max(0, errors.seek(0, 2) - 4096))
+                tail = errors.read().decode("utf-8", errors="replace")
+                # Local diagnostic only. Never send raw traceback/URLs to the UI.
+                tail = re.sub(r"https?://\S+", "<url>", tail)
+                for line in tail.splitlines()[-6:]:
+                    print(f"[audio-error] {video_id}: {line[:500]}", flush=True)
+            errors.close()
         try:
             timings = json.loads((Path(tempdir.name) / "timings.json").read_text())
             measured = {k: v for k, v in timings.items() if k in ("separating", "features", "loading-model", "analyzing") and isinstance(v, (int, float))}
@@ -203,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
         if TOKEN and not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN):
             return self.respond(401, {"error": "unauthorized"})
         if self.path == "/health":
-            return self.respond(200, {"status": "ok", "version": "fast-experiment-v2", "engine": ENGINE, "cpuThreads": cpu_threads()})
+            return self.respond(200, {"status": "ok", "version": "fast-experiment-v2.1", "engine": ENGINE, "cpuThreads": cpu_threads()})
         return self.respond(404, {"error": "not-found"})
 
     def do_POST(self):
@@ -216,7 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             now = time.time()
             for key, job in list(JOBS.items()):
-                ttl = (0 if job.get("reason") == "cancelled" else 300) if job["status"] == "failed" else 86400
+                ttl = failure_ttl(job) if job["status"] == "failed" else 86400
                 if job["status"] in ("ready", "failed") and now - job["updated"] > ttl:
                     del JOBS[key]
             if video_id not in JOBS:

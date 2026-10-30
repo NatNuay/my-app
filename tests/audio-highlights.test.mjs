@@ -71,7 +71,7 @@ test('worker job status and filtered results are forwarded without exposing cred
   const data = await (await request()).json();
   assert.equal(data.status, 'ready'); assert.equal(data.segments.length, 1);
   globalThis.fetch = async () => { throw Error('private connection details'); };
-  assert.deepEqual(await (await request()).json(), { status: 'failed', segments: [] });
+  assert.deepEqual(await (await request()).json(), { status: 'failed', reason: 'worker-unreachable', segments: [] });
 });
 test('remote worker cannot send credentials over plain HTTP', async () => {
   process.env.AUDIO_ANALYSIS_URL = 'http://remote.example';
@@ -145,4 +145,13 @@ test('explicit chapters need not wait; unavailable or empty audio still permits 
   assert.equal(selectHighlightProposal(lyric, [], { pending: false, engine: 'fast', source: 'lyrics' }), lyric);
   const dance = [{ ...lyric[0], kind: 'dance-break', start: 120, end: 140 }];
   assert.deepEqual(selectHighlightProposal([...lyric, ...dance], [], { pending: true, engine: 'fast', source: 'mixed' }), dance);
+});
+
+test('download timeout is surfaced without exposing raw worker exception details', async () => {
+  process.env.AUDIO_ANALYSIS_URL = 'http://127.0.0.1:8765';
+  globalThis.fetch = async () => Response.json({ status: 'failed', engine: 'fast', stage: 'downloading', reason: 'download-timeout', traceback: 'private local path' });
+  const data = await (await request()).json();
+  assert.equal(data.reason, 'download-timeout');
+  assert.equal(data.stage, 'downloading');
+  assert.equal('traceback' in data, false);
 });

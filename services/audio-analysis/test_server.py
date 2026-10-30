@@ -4,6 +4,8 @@ import threading
 import tempfile
 import time
 import subprocess
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import unittest
 from http.server import ThreadingHTTPServer
@@ -153,6 +155,31 @@ class JobsTest(unittest.TestCase):
         old = {"updated": time.time(), "segments": [{"start": 32, "end": 56, "label": "chorus"}]}
         (worker.CACHE_DIR / "fast-repeat-v1-RXQCY_zxz-E.json").write_text(json.dumps(old))
         self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+
+    def test_fast_failure_keeps_specific_reason_and_stage_even_when_it_exits_immediately(self):
+        process = Mock(returncode=1)
+        process.communicate.return_value = (b'{"error":"decode-failed"}', b'')
+        def spawn(args, **kwargs):
+            (Path(args[-1]) / "stage").write_text("decoding")
+            kwargs["stderr"].write(b'ERROR https://example.test/?token=private-test-secret\n')
+            kwargs["stderr"].flush()
+            return process
+        output = io.StringIO()
+        with patch.object(worker.subprocess, "Popen", side_effect=spawn), \
+             patch.object(worker, "stop_process"), redirect_stdout(output):
+            worker.run_job("RXQCY_zxz-E")
+        self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["reason"], "decode-failed")
+        self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["stage"], "decoding")
+        self.assertNotIn("private-test-secret", output.getvalue())
+        self.assertNotIn("traceback", worker.JOBS["RXQCY_zxz-E"])
+
+    def test_transient_download_failure_can_retry_without_waiting_five_minutes(self):
+        worker.JOBS["RXQCY_zxz-E"] = {"status": "failed", "reason": "download-timeout", "updated": time.time() - 16}
+        self.assertEqual(self.post("/jobs/RXQCY_zxz-E")[1]["status"], "queued")
+        self.pool.submit.assert_called_once()
+        worker.JOBS["RXQCY_zxz-E"] = {"status": "failed", "reason": "download-timeout", "updated": time.time() - 2}
+        self.assertEqual(self.post("/jobs/RXQCY_zxz-E")[1]["status"], "failed")
+        self.pool.submit.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -66,9 +66,15 @@ class PhaseTest(unittest.TestCase):
                 result = runner.analyze("RXQCY_zxz-E", root)
             self.assertEqual(result["engine"], "fast")
             self.assertNotIn("--extract-audio", download.call_args.args[0])
-            self.assertEqual(download.call_args.kwargs["timeout"], 12)
+            self.assertEqual(download.call_args.kwargs["timeout"], 20)
             self.assertFalse((root / "audio.wav").exists())
             fast.analyze_file.assert_called_once_with(root / "audio.webm", root)
+
+    def test_download_deadline_is_distinguished_from_audio_analysis_failure(self):
+        self.assertEqual(runner.failure_reason(runner.subprocess.TimeoutExpired("yt_dlp", 20), "downloading"), "download-timeout")
+        self.assertEqual(runner.failure_reason(runner.subprocess.CalledProcessError(1, "yt_dlp"), "downloading"), "download-failed")
+        self.assertEqual(runner.failure_reason(ValueError("DSP failure"), "analyzing"), "analysis-failed")
+        self.assertEqual(runner.failure_reason(ModuleNotFoundError("scipy"), "features"), "dependency-missing")
 
 
 if __name__ == "__main__":

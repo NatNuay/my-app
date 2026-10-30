@@ -7,6 +7,7 @@ import shutil
 import os
 import time
 import importlib
+import traceback
 from pathlib import Path
 
 
@@ -23,7 +24,7 @@ def analyze(video_id, root):
         *([] if fast_mode else ["--extract-audio", "--audio-format", "wav"]),
         "-o", str(root / "audio.%(ext)s"),
         f"https://www.youtube.com/watch?v={video_id}",
-    ], check=True, stdout=sys.stderr, timeout=12 if fast_mode else 45)
+    ], check=True, stdout=sys.stderr, timeout=20 if fast_mode else 45)
     files = [p for p in root.glob("audio.*") if p.suffix not in (".part", ".ytdl")]
     audio = files[0] if fast_mode and files else root / "audio.wav"
     if not audio.is_file():
@@ -75,9 +76,33 @@ def analyze_file(audio, root):
     return {"engine": "full", "segments": [dict(start=s.start, end=s.end, label=s.label) for s in result.segments]}
 
 
+def failure_reason(error, stage):
+    if isinstance(error, (ImportError, ModuleNotFoundError)):
+        return "dependency-missing"
+    if isinstance(error, FileNotFoundError):
+        return "tool-missing"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "download-timeout" if stage == "downloading" else "decode-timeout"
+    if isinstance(error, subprocess.CalledProcessError):
+        return "download-failed" if stage == "downloading" else "decode-failed"
+    if str(error).startswith("No audio:"):
+        return "download-rejected"
+    return "analysis-failed"
+
+
 if __name__ == "__main__":
     import re
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     if len(sys.argv) != 3 or not re.fullmatch(r"[\w-]{11}", sys.argv[1], flags=re.ASCII):
         raise SystemExit("Invalid video ID")
-    print(json.dumps(analyze(sys.argv[1], Path(sys.argv[2]))))
+    root = Path(sys.argv[2])
+    try:
+        print(json.dumps(analyze(sys.argv[1], root)))
+    except Exception as error:
+        try:
+            stage = (root / "stage").read_text().strip()
+        except OSError:
+            stage = "unknown"
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({"error": failure_reason(error, stage), "stage": stage}))
+        raise SystemExit(1)
