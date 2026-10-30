@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 import { NextRequest } from 'next/server.js';
-import { audioChoruses, combineAudioHighlights } from '../lib/audio-highlights.ts';
+import { audioChoruses, combineAudioHighlights, retainDisplayedHighlights } from '../lib/audio-highlights.ts';
 
 test('audio chorus times include the original clip intro; instrumental labels are not dance breaks', () => {
   const segments = audioChoruses([
@@ -103,4 +103,24 @@ test('API passes fast engine provenance and labels to the browser', async () => 
   const data = await (await request()).json();
   assert.equal(data.engine, 'fast');
   assert.match(data.segments[0].label, /ทดลอง/);
+});
+
+test('late conflicting audio cannot replace or remove an already displayed lyric chorus set', () => {
+  const first = audioChoruses([{ start: 30, end: 58, label: 'chorus' }, { start: 90, end: 118, label: 'chorus' }]);
+  const late = audioChoruses([{ start: 42, end: 66, label: 'chorus' }], 'fast');
+  assert.equal(retainDisplayedHighlights(first, late), first);
+  assert.equal(retainDisplayedHighlights(first, []), first);
+});
+test('late metadata cannot silently replace the audio chorus set that was displayed first', () => {
+  const first = audioChoruses([{ start: 32, end: 56, label: 'chorus' }], 'fast');
+  const late = [{ ...first[0], start: 45, end: 70, label: 'Late uploader range' }];
+  assert.equal(retainDisplayedHighlights(first, late), first);
+});
+test('empty or break-only first results still accept later choruses and distinct dance breaks', () => {
+  const chorus = audioChoruses([{ start: 32, end: 56, label: 'chorus' }]);
+  assert.equal(retainDisplayedHighlights([], chorus), chorus);
+  const dance = { ...chorus[0], kind: 'dance-break', start: 120, end: 140 };
+  assert.deepEqual(retainDisplayedHighlights([dance], chorus).map(s => s.start), [32, 120]);
+  const overlap = { ...dance, start: 40, end: 65 };
+  assert.deepEqual(retainDisplayedHighlights(chorus, [overlap, dance]).map(s => s.start), [32, 120]);
 });

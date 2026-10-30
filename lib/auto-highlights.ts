@@ -1,7 +1,7 @@
 // lib/auto-highlights.ts
 // ดึงท่อนฮุคที่ระบบวิเคราะห์ให้ของคลิปที่กำลังเล่น (เรียก /api/youtube/highlights)
-import { useEffect, useState } from "react";
-import { combineAudioHighlights } from "./audio-highlights";
+import { useEffect, useMemo, useState } from "react";
+import { combineAudioHighlights, retainDisplayedHighlights } from "./audio-highlights";
 import type { AutoSegment, HighlightsResponse } from "@/lib/highlight-analysis";
 
 type Status = "idle" | "loading" | "ready" | "none" | "error";
@@ -19,6 +19,9 @@ interface State extends Result {
 // จำผลไว้ตลอดการใช้งานหน้านี้ เปิดคลิปเดิมซ้ำไม่ต้องรอ/ไม่ต้องยิง API อีก
 const cache = new Map<string, Result>();
 const NO_SEGMENTS: AutoSegment[] = [];
+// Remember what was actually displayed, separately from raw source caches.
+// Revisiting a clip must not change the winner just because a cache is faster.
+const displayedCache = new Map<string, AutoSegment[]>();
 
 export function useAutoHighlights(videoId: string | undefined): {
   status: Status;
@@ -29,6 +32,7 @@ export function useAutoHighlights(videoId: string | undefined): {
 } {
   const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string; stage?: string; engine?: string }>({ id: "", segments: [], pending: false, status: "idle" });
   const [state, setState] = useState<State>({ status: "idle", segments: NO_SEGMENTS });
+  const [shown, setShown] = useState<{ id?: string; segments: AutoSegment[] }>({ segments: NO_SEGMENTS });
 
   useEffect(() => {
     if (!videoId) return;
@@ -42,6 +46,7 @@ export function useAutoHighlights(videoId: string | undefined): {
     fetch(`/api/youtube/highlights?v=${encodeURIComponent(videoId)}`, { signal: AbortSignal.any([ac.signal, AbortSignal.timeout(30000)]) })
       .then(async (r) => {
         const data = (await r.json().catch(() => null)) as (HighlightsResponse & { error?: string }) | null;
+        if (ac.signal.aborted) return;
         if (!data) throw new Error(`เซิร์ฟเวอร์ตอบกลับผิดรูปแบบ (HTTP ${r.status}) ตรวจว่ามีไฟล์ app/api/youtube/highlights/route.ts`);
         if (!r.ok && !data.error) throw new Error(`เซิร์ฟเวอร์ตอบกลับ HTTP ${r.status}`);
         if (data.error) throw new Error(data.error);
@@ -50,7 +55,7 @@ export function useAutoHighlights(videoId: string | undefined): {
         setState({ id: videoId, status: result.segments.length > 0 ? "ready" : "none", ...result });
       })
       .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
+        if (ac.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
         const reason = err instanceof Error ? err.message : "ไม่ทราบสาเหตุ";
         setState({ id: videoId, status: "error", segments: NO_SEGMENTS, reason });
       });
@@ -85,10 +90,27 @@ export function useAutoHighlights(videoId: string | undefined): {
     return () => { ac.abort(); clearTimeout(timer); };
   }, [videoId]);
 
-  // ผลของคลิปก่อนหน้าต้องไม่โผล่ค้างตอนเปลี่ยนคลิป
-  if (!videoId || (state.id !== videoId && audio.id !== videoId)) return { status: videoId ? "loading" : "idle", segments: NO_SEGMENTS };
-  const audioSegments = audio.id === videoId ? audio.segments : [];
-  const segments = combineAudioHighlights(state.id === videoId ? state.segments : NO_SEGMENTS, audioSegments, audio.engine === "fast" && ["chapters", "comments"].includes(state.source ?? ""));
+  const proposed = useMemo(() => combineAudioHighlights(
+    state.id === videoId ? state.segments : NO_SEGMENTS,
+    audio.id === videoId ? audio.segments : NO_SEGMENTS,
+    audio.engine === "fast" && ["chapters", "comments"].includes(state.source ?? ""),
+  ), [videoId, state.id, state.segments, state.source, audio.id, audio.segments, audio.engine]);
+
+  const previous = shown.id === videoId ? shown.segments : (videoId && displayedCache.get(videoId)) || NO_SEGMENTS;
+  const segments = useMemo(() => retainDisplayedHighlights(previous, proposed), [previous, proposed]);
+  useEffect(() => {
+    if (!videoId) return;
+    const accepted = retainDisplayedHighlights(displayedCache.get(videoId) ?? NO_SEGMENTS, proposed);
+    if (accepted.length) {
+      displayedCache.delete(videoId);
+      displayedCache.set(videoId, accepted);
+      if (displayedCache.size > 128) displayedCache.delete(displayedCache.keys().next().value!);
+    }
+    setShown(old => old.id === videoId && old.segments === accepted ? old : { id: videoId, segments: accepted });
+  }, [videoId, proposed]);
+
+  // Clip IDs isolate both pending source responses and the displayed snapshot.
+  if (!videoId) return { status: "idle", segments: NO_SEGMENTS };
   const audioStatus = audio.id === videoId ? audio.status : undefined;
   const audioStage = audio.id === videoId ? audio.stage : undefined;
   if (segments.length) return { status: "ready", segments, audioStatus, audioStage };
