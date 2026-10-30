@@ -1,6 +1,10 @@
 import importlib.util
 import json
 import threading
+import tempfile
+import time
+import subprocess
+from pathlib import Path
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
@@ -15,6 +19,8 @@ spec.loader.exec_module(worker)
 class JobsTest(unittest.TestCase):
     def setUp(self):
         worker.JOBS.clear()
+        self.cache = tempfile.TemporaryDirectory()
+        patch.object(worker, "CACHE_DIR", Path(self.cache.name)).start()
         self.pool = patch.object(worker, "POOL", Mock()).start()
         self.token = patch.object(worker, "TOKEN", "test-secret").start()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), worker.Handler)
@@ -26,6 +32,7 @@ class JobsTest(unittest.TestCase):
         self.server.server_close()
         self.thread.join()
         patch.stopall()
+        self.cache.cleanup()
 
     def post(self, path, token="test-secret"):
         request = Request(f"http://127.0.0.1:{self.server.server_port}" + path,
@@ -61,6 +68,61 @@ class JobsTest(unittest.TestCase):
             worker.run_job("RXQCY_zxz-E")
         self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["status"], "failed")
         self.assertNotIn("sensitive", json.dumps(worker.JOBS))
+
+    def test_disk_cache_survives_worker_restart_without_scheduling_analysis(self):
+        worker.save_cache("RXQCY_zxz-E", {"segments": [{"start": 64, "end": 80.9, "label": "chorus"}]})
+        worker.JOBS.clear()
+        status, data = self.post("/jobs/RXQCY_zxz-E")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "ready")
+        self.assertTrue(data["cached"])
+        self.pool.submit.assert_not_called()
+
+    def test_expired_and_corrupt_cache_are_not_returned_as_highlights(self):
+        path = worker.CACHE_DIR / "fold0-v1-RXQCY_zxz-E.json"
+        for contents in ["broken json", json.dumps({"updated": 0, "segments": []}),
+                         json.dumps({"updated": time.time(), "segments": [{"start": -1, "end": 20, "label": "chorus"}]})]:
+            path.write_text(contents)
+            self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+
+    def test_abandoned_queued_job_never_starts_download_or_model(self):
+        worker.JOBS["RXQCY_zxz-E"] = {"status": "queued", "updated": time.time(), "lastRequested": time.time() - 31}
+        with patch.object(worker.subprocess, "Popen") as spawn:
+            worker.run_job("RXQCY_zxz-E")
+        spawn.assert_not_called()
+        self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["reason"], "cancelled")
+
+    def test_running_abandoned_job_is_terminated_and_does_not_cache_fake_success(self):
+        process = Mock()
+        process.communicate.side_effect = subprocess.TimeoutExpired("test", 1)
+        with patch.object(worker, "abandoned", side_effect=[False, True]), \
+             patch.object(worker.subprocess, "Popen", return_value=process), \
+             patch.object(worker, "stop_process") as stop:
+            worker.run_job("RXQCY_zxz-E")
+        stop.assert_called_once_with(process)
+        self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["reason"], "cancelled")
+        self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+
+    def test_hard_deadline_is_reported_as_timeout(self):
+        process = Mock()
+        process.communicate.side_effect = subprocess.TimeoutExpired("test", 1)
+        with patch.object(worker, "abandoned", return_value=False), \
+             patch.object(worker, "JOB_TIMEOUT", 0), \
+             patch.object(worker.subprocess, "Popen", return_value=process), \
+             patch.object(worker, "stop_process") as stop:
+            worker.run_job("RXQCY_zxz-E")
+        stop.assert_called_once()
+        self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["reason"], "timeout")
+
+    def test_success_is_persisted_and_threads_are_bounded(self):
+        process = Mock(returncode=0)
+        process.communicate.return_value = (b'{"segments":[{"start":64,"end":80.9,"label":"chorus"}]}', b'')
+        with patch.object(worker.subprocess, "Popen", return_value=process) as spawn:
+            worker.run_job("RXQCY_zxz-E")
+        self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["status"], "ready")
+        self.assertIsNotNone(worker.read_cache("RXQCY_zxz-E"))
+        self.assertEqual(spawn.call_args.kwargs["env"]["OMP_NUM_THREADS"], "2")
+        self.assertFalse(Path(spawn.call_args.args[0][-1]).exists())
 
 
 if __name__ == "__main__":

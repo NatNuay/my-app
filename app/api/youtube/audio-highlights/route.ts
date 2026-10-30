@@ -23,7 +23,10 @@ export async function GET(req: NextRequest) {
     if (!response.ok) throw Error("Service unavailable");
     const data = await response.json();
     if (!["queued", "processing", "ready", "failed"].includes(data.status)) throw Error("Invalid job status");
-    return NextResponse.json({ status: data.status, segments: data.status === "ready" ? audioChoruses(data.segments) : [] });
+    return NextResponse.json({ status: data.status,
+      ...(data.status === "processing" && ["downloading", "analyzing"].includes(data.stage) ? { stage: data.stage } : {}),
+      ...(data.status === "failed" && data.reason === "timeout" ? { reason: "timeout" } : {}),
+      segments: data.status === "ready" ? audioChoruses(data.segments) : [] });
   } catch {
     // Optional audio worker errors must not break existing metadata highlights.
     return NextResponse.json({ status: "failed", segments: [] });

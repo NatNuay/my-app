@@ -243,17 +243,19 @@ export default function Page() {
                 </small>
               </>
             )}
-            {!source && mode === "single" && <small> {MODE_LABEL.single}</small>}
           </p>
           <YouTubePlayer
             videoId={current.id}
             onEnded={() => step(1, false)}
-            loopOne={mode === "single"}
+            loopOne={!!source && mode === "single"}
             highlights={auto.segments}
           />
-          {auto.audioStatus === "processing" && auto.status === "ready" && <p><small>กำลังวิเคราะห์เสียงเบื้องหลัง สามารถเล่นคลิปต่อได้…</small></p>}
+          {["queued", "busy"].includes(auto.audioStatus ?? "") && <p><small>กำลังรอคิววิเคราะห์เสียง สามารถเล่นคลิปต่อได้…</small></p>}
+          {auto.audioStatus === "downloading" && <p><small>กำลังเตรียมเสียงของคลิปนี้…</small></p>}
+          {auto.audioStatus === "analyzing" && <p><small>กำลังวิเคราะห์เสียงของคลิปนี้ สามารถเล่นคลิปต่อได้…</small></p>}
+          {auto.audioStatus === "timeout" && <p><small>วิเคราะห์เสียงใช้เวลานานเกินไป หยุดรอแล้วและใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
           {auto.audioStatus === "failed" && <p><small>วิเคราะห์เสียงของคลิปนี้ไม่ได้ จึงใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
-          {auto.status === "loading" && <small>กำลังวิเคราะห์ท่อนฮุคของคลิปนี้…</small>}
+          {auto.status === "loading" && !["queued", "busy", "downloading", "analyzing"].includes(auto.audioStatus ?? "") && <small>กำลังค้นหาข้อมูลไฮไลท์ของคลิปนี้…</small>}
           {auto.status === "none" && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
         </section>
