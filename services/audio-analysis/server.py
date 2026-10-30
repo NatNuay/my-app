@@ -26,6 +26,18 @@ LEASE_SECONDS = 30
 JOB_TIMEOUT = 180
 
 
+def cpu_threads():
+    try:
+        available = len(os.sched_getaffinity(0))
+    except AttributeError:
+        available = os.cpu_count() or 1
+    try:
+        requested = int(os.environ.get("AUDIO_ANALYSIS_THREADS", "6"))
+    except ValueError:
+        requested = 6
+    return max(1, min(available, requested))
+
+
 def valid_segments(value):
     if not isinstance(value, list) or len(value) > 200:
         return False
@@ -103,8 +115,9 @@ def run_job(video_id):
         # Parent owns temporary audio, so even a hard-killed child leaves no files.
         root = Path(tempdir.name)
         env = os.environ.copy()
-        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-            env[name] = "2"
+        threads = str(cpu_threads())
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "AUDIO_ANALYSIS_THREADS"):
+            env[name] = threads
         process = subprocess.Popen([sys.executable, str(RUNNER), video_id, str(root)],
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
                                    start_new_session=(os.name != "nt"))
@@ -120,9 +133,12 @@ def run_job(video_id):
                     raise RuntimeError("timeout")
                 try:
                     stage = (root / "stage").read_text().strip()
-                    if stage in ("downloading", "analyzing"):
+                    if stage in ("downloading", "separating", "features", "loading-model", "analyzing"):
                         with LOCK:
+                            previous = JOBS[video_id].get("stage")
                             JOBS[video_id]["stage"] = stage
+                        if stage != previous:
+                            print(f"[audio] {video_id}: {stage} (elapsed {time.monotonic() - began:.1f}s)", flush=True)
                 except OSError:
                     pass
         if process.returncode:
@@ -136,12 +152,18 @@ def run_job(video_id):
         if process is not None:
             stop_process(process)
         reason = str(error) if str(error) in ("cancelled", "timeout") else "audio-analysis-unavailable"
-        job = {"status": "failed", "reason": reason}
+        job = {"status": "failed", "reason": reason, "stage": JOBS.get(video_id, {}).get("stage", "unknown")}
     finally:
+        try:
+            timings = json.loads((Path(tempdir.name) / "timings.json").read_text())
+            measured = {k: v for k, v in timings.items() if k in ("separating", "features", "loading-model", "analyzing") and isinstance(v, (int, float))}
+            print(f"[audio] {video_id}: phase seconds {json.dumps(measured)}", flush=True)
+        except (OSError, ValueError, AttributeError):
+            pass
         tempdir.cleanup()
     with LOCK:
         JOBS[video_id] = {**job, "updated": time.time()}
-    print(f"[audio] {video_id}: {job['status']} ({time.monotonic() - began:.1f}s) {job.get('reason', '')}", flush=True)
+    print(f"[audio] {video_id}: {job['status']} ({time.monotonic() - began:.1f}s) {job.get('reason', '')} stage={job.get('stage', 'complete')}", flush=True)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -161,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         if TOKEN and not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN):
             return self.respond(401, {"error": "unauthorized"})
         if self.path == "/health":
-            return self.respond(200, {"status": "ok"})
+            return self.respond(200, {"status": "ok", "version": "phase-diagnostics-v1", "cpuThreads": cpu_threads()})
         return self.respond(404, {"error": "not-found"})
 
     def do_POST(self):
