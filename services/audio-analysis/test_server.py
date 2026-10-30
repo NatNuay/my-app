@@ -121,8 +121,18 @@ class JobsTest(unittest.TestCase):
             worker.run_job("RXQCY_zxz-E")
         self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["status"], "ready")
         self.assertIsNotNone(worker.read_cache("RXQCY_zxz-E"))
-        self.assertEqual(spawn.call_args.kwargs["env"]["OMP_NUM_THREADS"], "2")
+        self.assertEqual(spawn.call_args.kwargs["env"]["OMP_NUM_THREADS"], str(worker.cpu_threads()))
         self.assertFalse(Path(spawn.call_args.args[0][-1]).exists())
+
+    def test_cpu_budget_uses_six_on_twelve_and_respects_small_allocations(self):
+        with patch.dict(worker.os.environ, {"AUDIO_ANALYSIS_THREADS": "6"}), \
+             patch.object(worker.os, "sched_getaffinity", return_value=set(range(12)), create=True):
+            self.assertEqual(worker.cpu_threads(), 6)
+        with patch.dict(worker.os.environ, {"AUDIO_ANALYSIS_THREADS": "6"}), \
+             patch.object(worker.os, "sched_getaffinity", return_value={0, 1}, create=True):
+            self.assertEqual(worker.cpu_threads(), 2)
+        with patch.dict(worker.os.environ, {"AUDIO_ANALYSIS_THREADS": "0"}):
+            self.assertEqual(worker.cpu_threads(), 1)
 
 
 if __name__ == "__main__":

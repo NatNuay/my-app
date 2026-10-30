@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
     const data = await response.json();
     if (!["queued", "processing", "ready", "failed"].includes(data.status)) throw Error("Invalid job status");
     return NextResponse.json({ status: data.status,
-      ...(data.status === "processing" && ["downloading", "analyzing"].includes(data.stage) ? { stage: data.stage } : {}),
+      ...(["processing", "failed"].includes(data.status) && ["downloading", "separating", "features", "loading-model", "analyzing"].includes(data.stage) ? { stage: data.stage } : {}),
       ...(data.status === "failed" && data.reason === "timeout" ? { reason: "timeout" } : {}),
       segments: data.status === "ready" ? audioChoruses(data.segments) : [] });
   } catch {

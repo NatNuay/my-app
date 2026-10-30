@@ -252,10 +252,13 @@ export default function Page() {
           />
           {["queued", "busy"].includes(auto.audioStatus ?? "") && <p><small>กำลังรอคิววิเคราะห์เสียง สามารถเล่นคลิปต่อได้…</small></p>}
           {auto.audioStatus === "downloading" && <p><small>กำลังเตรียมเสียงของคลิปนี้…</small></p>}
+          {auto.audioStatus === "separating" && <p><small>กำลังแยกเสียงร้องและเครื่องดนตรี ขั้นตอนนี้ใช้ CPU มาก…</small></p>}
+          {auto.audioStatus === "features" && <p><small>กำลังเตรียมข้อมูลเสียงสำหรับวิเคราะห์…</small></p>}
+          {auto.audioStatus === "loading-model" && <p><small>กำลังโหลดโมเดลวิเคราะห์เสียง…</small></p>}
           {auto.audioStatus === "analyzing" && <p><small>กำลังวิเคราะห์เสียงของคลิปนี้ สามารถเล่นคลิปต่อได้…</small></p>}
-          {auto.audioStatus === "timeout" && <p><small>วิเคราะห์เสียงใช้เวลานานเกินไป หยุดรอแล้วและใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
+          {auto.audioStatus === "timeout" && <p><small>วิเคราะห์เสียงใช้เวลานานเกินไป{auto.audioStage === "separating" ? "ในขั้นแยกเสียง" : ""} หยุดรอแล้วและใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
           {auto.audioStatus === "failed" && <p><small>วิเคราะห์เสียงของคลิปนี้ไม่ได้ จึงใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
-          {auto.status === "loading" && !["queued", "busy", "downloading", "analyzing"].includes(auto.audioStatus ?? "") && <small>กำลังค้นหาข้อมูลไฮไลท์ของคลิปนี้…</small>}
+          {auto.status === "loading" && !["queued", "busy", "downloading", "separating", "features", "loading-model", "analyzing"].includes(auto.audioStatus ?? "") && <small>กำลังค้นหาข้อมูลไฮไลท์ของคลิปนี้…</small>}
           {auto.status === "none" && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
         </section>
