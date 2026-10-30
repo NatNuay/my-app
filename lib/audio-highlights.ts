@@ -32,3 +32,20 @@ export function combineAudioHighlights(metadata: AutoSegment[], audio: AutoSegme
   return [...audio, ...metadata.filter(item => item.kind === "dance-break" &&
     !audio.some(a => a.start < item.end && item.start < a.end))].sort((a, b) => a.start - b.start);
 }
+
+/** Keep the first displayed chorus set for this visit. Arrival time is not
+ * evidence that a newer prediction is more accurate. Later sources may fill an
+ * empty chorus set or add a distinct dance break, never silently move a range.
+ */
+export function retainDisplayedHighlights(displayed: AutoSegment[], incoming: AutoSegment[]): AutoSegment[] {
+  if (!displayed.length) return incoming;
+  const chorusLocked = displayed.some(segment => segment.kind !== "dance-break");
+  const additions: AutoSegment[] = [];
+  for (const segment of incoming) {
+    if (chorusLocked && segment.kind !== "dance-break") continue;
+    if ([...displayed, ...additions].some(existing =>
+      existing.start < segment.end && segment.start < existing.end)) continue;
+    additions.push(segment);
+  }
+  return additions.length ? [...displayed, ...additions].sort((a, b) => a.start - b.start) : displayed;
+}
