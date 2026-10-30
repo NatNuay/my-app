@@ -77,10 +77,23 @@ def refine_boundaries(spans, novelty, energy):
         after = strong[(strong >= right) & (strong <= right + radius)]
         start = int(before[-1]) if len(before) else left
         end = int(after[0]) if len(after) else right
-        # A brief low-energy pickup before a drop is a stronger onset cue than
-        # the center of the broad novelty peak. Keep an adjacent novelty cue
-        # when it is already within 1.5 seconds of the matched start.
-        if left - start > round(1.5 / STEP) or not len(before):
+        # A clear near-silent gap followed by a drop can precede the broad
+        # harmonic-change peak, even when that peak is close to the match.
+        typical = float(np.median(energy[left:min(len(energy), left + round(2 / STEP))]))
+        near = max(0, left - round(1.5 / STEP))
+        quiet = np.flatnonzero(energy[near:left + 1] < typical * 0.15) if typical > 1e-8 else []
+        pickup = None
+        if len(quiet):
+            last = near + int(quiet[-1])
+            first = last
+            while first > 0 and energy[first - 1] < typical * 0.15:
+                first -= 1
+            recovery = energy[last:min(len(energy), last + round(1 / STEP) + 1)]
+            if (last - first + 1) * STEP >= 0.5 and recovery.max(initial=0) > typical * 0.5:
+                pickup = last
+        if pickup is not None:
+            start = pickup
+        elif left - start > round(1.5 / STEP) or not len(before):
             lo = max(0, left - round(2.5 / STEP))
             if left > lo:
                 valley = lo + int(np.argmin(energy[lo:left + 1]))

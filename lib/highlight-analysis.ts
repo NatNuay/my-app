@@ -12,6 +12,7 @@
 export type Confidence = "high" | "medium";
 
 export interface AutoSegment {
+  origin?: "uploader" | "comment" | "lyrics" | "audio-fast" | "audio-full";
   kind?: "chorus" | "dance-break";
   start: number; // วินาที (ตามเวลาของคลิป)
   end: number;
@@ -436,6 +437,7 @@ export function buildChorusSegments(
 
     out.push({
       kind: "chorus",
+      origin: "lyrics",
       start,
       end,
       label: `ท่อนฮุค รอบ ${idx + 1}/${total} (ระบบคาดการณ์)`,

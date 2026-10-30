@@ -103,6 +103,28 @@ class FastTest(unittest.TestCase):
                 self.assertLessEqual(abs(nearest["start"] - expected["start"]), 1)
                 self.assertLessEqual(abs(nearest["end"] - expected["end"]), 1)
 
+    def test_uploaded_seventeen_audio_reaches_the_user_confirmed_chorus(self):
+        fixtures = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+        ref = json.loads((fixtures / "comment-reaction-reference.json").read_text())
+        with np.load(fixtures / ref["featureFixture"], allow_pickle=False) as data:
+            segments = fast.repeated_sections(tuple(data[k] for k in ["c", "t", "energy", "active"]), float(data["duration"]))
+        first = min(segments, key=lambda s: abs(s["start"] - ref["expectedOccurrence"]["start"]))
+        self.assertLessEqual(abs(first["start"] - ref["expectedOccurrence"]["start"]), 1)
+        self.assertLessEqual(abs(first["end"] - ref["expectedOccurrence"]["end"]), 1)
+        self.assertNotIn(ref["observedWrongRange"], [{"start": s["start"], "end": s["end"]} for s in segments])
+
+    def test_short_silent_pickup_can_precede_a_nearby_harmonic_peak(self):
+        energy = np.full(100, .01, dtype=np.float32)
+        energy[32:35] = .0005
+        novelty = np.zeros(100, dtype=np.float32)
+        novelty[39] = 1
+        span = [(40, 80)]
+        self.assertEqual(fast.refine_boundaries(span, novelty, energy)[0][0], 34)
+        # Without an actual quiet gap, keep the musical-change cue; never
+        # subtract a fixed amount of time just because a match starts late.
+        energy[:] = .01
+        self.assertEqual(fast.refine_boundaries(span, novelty, energy)[0][0], 39)
+
 
 if __name__ == "__main__":
     unittest.main()

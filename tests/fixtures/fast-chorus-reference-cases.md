@@ -29,3 +29,12 @@ ranges, delaying the audio response to reproduce the source-order bug. A lyric
 result must not lock the UI while bounded fast audio analysis is still pending.
 After the first selected result is displayed, the existing snapshot protection
 continues to prevent late results from silently moving its boundaries.
+
+## SEVENTEEN comment reaction regression
+
+`comment-reaction-reference.json` stores only the relevant short timestamped
+reaction line, not the surrounding long comment. The user confirmed first chorus
+58–79 s and uploaded the matching recording. The derived fixture
+`fast-chorus-aJ55DJE4Os4-features.npz` produces 58.5–79.25 s after refinement.
+The data is not a per-song timing override. Only the supplied first occurrence is
+verified; later repeats have no human-verified reference here.

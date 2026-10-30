@@ -8,7 +8,7 @@ export function audioChoruses(value: unknown, engine: "fast" | "full" = "full"):
     if (!item || item.label !== "chorus" || typeof item.start !== "number" ||
         typeof item.end !== "number" || !Number.isFinite(item.start) || !Number.isFinite(item.end) ||
         item.start < 0 || item.end > 900 || item.end - item.start < 5 || item.end - item.start > 120) continue;
-    result.push({ kind: "chorus", start: item.start, end: item.end,
+    result.push({ kind: "chorus", origin: engine === "fast" ? "audio-fast" : "audio-full", start: item.start, end: item.end,
       label: engine === "fast" ? "ท่อนซ้ำที่อาจเป็นฮุค (โหมดเร็ว · ทดลอง)" : "ท่อนฮุค (วิเคราะห์เสียง · ระบบคาดการณ์)", confidence: "medium",
       evidence: engine === "fast" ? "เปรียบเทียบรูปแบบเสียงที่ซ้ำในคลิปนี้ · ยังไม่ยืนยันว่าเป็นฮุค และไม่ได้ตรวจท่าเต้น" : "All-In-One วิเคราะห์เสียงจากคลิปนี้โดยตรง · ยังไม่ได้ยืนยันด้วยคน" });
   }
@@ -36,16 +36,17 @@ export function combineAudioHighlights(metadata: AutoSegment[], audio: AutoSegme
 /** Resolve source priority BEFORE the first snapshot is published. A lyric
  * repeat may be a pre-chorus or only the sung middle of an instrumental hook.
  * When fast audio is running, wait for that bounded result instead of locking
- * the earlier lyric guess. Existing chapter/comment boundaries remain usable.
+ * the earlier lyric guess. Uploader chapters remain usable; comments cannot overrule analyzed audio.
  */
 export function selectHighlightProposal(metadata: AutoSegment[], audio: AutoSegment[], options: {
   pending: boolean; engine?: string; source?: HighlightsResponse["source"];
 }): AutoSegment[] {
-  const explicit = options.source === "chapters" || options.source === "comments";
-  if (options.pending && options.engine !== "full" && !explicit) {
-    return metadata.filter(segment => segment.kind === "dance-break");
-  }
-  return combineAudioHighlights(metadata, audio, explicit);
+  const trusted = metadata.filter(segment => segment.kind === "dance-break" ||
+    segment.origin === "uploader" || (segment.origin === undefined && options.source === "chapters"));
+  if (options.pending && options.engine !== "full") return trusted;
+  if (audio.length) return combineAudioHighlights(trusted, audio, true);
+  return metadata; // Comment tables/lyrics remain a fallback if audio is unavailable.
+
 }
 
 /** Keep the first displayed chorus set for this visit. Arrival time is not
