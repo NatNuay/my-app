@@ -137,3 +137,17 @@ test('plain lyrics have an explicit no-timestamps outcome, not fabricated highli
   const response = await request(); const data = await response.json();
   assert.equal(response.status, 200); assert.equal(data.reason, 'untimed-lyrics'); assert.deepEqual(data.segments, []);
 });
+
+test('timestamped reaction prose does not survive as a comment-source chorus when lyrics are missing', async () => {
+  const reference = JSON.parse(fs.readFileSync(new URL('./fixtures/comment-reaction-reference.json', import.meta.url), 'utf8'));
+  globalThis.fetch = async url => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/videos')) return respond(snippet('', reference.title, 'PT3M25S'));
+    if (path.endsWith('/commentThreads')) return respond({ items: [{ snippet: { topLevelComment: { snippet: { textDisplay: reference.comment.text, likeCount: reference.comment.likes } } } }] });
+    return respond([]);
+  };
+  const data = await (await request()).json();
+  assert.deepEqual(data.segments, []);
+  assert.equal(data.reason, 'no-lyrics');
+  assert.notEqual(data.source, 'comments');
+});

@@ -1,14 +1,30 @@
 import { cleanSongTitle, normalizeLine, parseChapters, parseTimestamps, type AutoSegment, type Chapter, type CommentInput, type LyricLine, type Occurrence } from "./highlight-analysis";
 
-// Explicit section names only: "pre-chorus", "post chorus", "chorus tutorial" are not chorus boundaries.
+// A section name is a boundary declaration. Mentioning "the chorus" inside a
+// reaction sentence (even beside a timestamp range) is not such a declaration.
+const CLOCK_IN_LABEL = /(?:\d{1,2}:)?\d{1,2}:[0-5]\d/g;
+const ORDINAL = "(?:[0-9]+(?:st|nd|rd|th)?|first|second|third|fourth|last|final|แรก|สอง|สาม|สุดท้าย)";
+function boundaryLabel(label: string): string {
+  return normalizeLine(label.replace(CLOCK_IN_LABEL, " "));
+}
+function sectionName(label: string, names: string): boolean {
+  const text = boundaryLabel(label);
+  const modifiers = "(?:repeat|repeated|ซ้ำ|dance break|instrumental|start|starts|beginning)";
+  return new RegExp(`^(?:${ORDINAL}\\s+)?(?:ท่อน\\s*)?(?:${names})(?:\\s*${ORDINAL})?(?:\\s+${modifiers})?$`, "i").test(text);
+}
+
 export function isChorusLabel(label: string): boolean {
-  return !/pre[\s-]*chorus|post[\s-]*chorus|(?:ก่อน|หลัง|พรี)\s*(?:ท่อน\s*)?ฮุ[คก]|สอน|tutorial|breakdown/i.test(label) &&
-    /\bchorus\b|\bhook\b|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴/i.test(label);
+  return sectionName(label, "chorus|hook|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴|코러스");
 }
 
 export function isDanceBreakLabel(label: string): boolean {
-  return !/tutorial|breakdown|สอน|no dance|without/i.test(label) &&
-    /dance[\s-]*break|เบร[กค]แดนซ์|แดนซ์เบร[กค]|댄스\s*브레이크/i.test(label);
+  return sectionName(label, "dance\\s*break|เบร[กค]แดนซ์|แดนซ์เบร[กค]|댄스\\s*브레이크");
+}
+
+function isSectionLabel(label: string): boolean {
+  return isChorusLabel(label) || isDanceBreakLabel(label) || sectionName(label,
+    "intro|outro|verse|pre\\s*(?:chorus|hook)|post\\s*(?:chorus|hook)|bridge|rap|break|instrumental|solo|ending|interlude|" +
+    "อินโทร|เอาท์โทร|เวิร์ส|พรีฮุ[คก]|ก่อนฮุ[คก]|บริดจ์|แร็ป|ท่อนจบ|ดนตรี|โซโล่|인트로|벌스|브릿지");
 }
 
 export function chapterHighlights(description: string, comments: CommentInput[], duration: number): AutoSegment[] {
@@ -16,6 +32,7 @@ export function chapterHighlights(description: string, comments: CommentInput[],
     .filter((c) => (isChorusLabel(c.label) || isDanceBreakLabel(c.label)) && c.end - c.start >= 3 && c.end - c.start <= 90)
     .map((c): AutoSegment => ({
       start: c.start, end: c.end,
+      origin: uploader ? "uploader" : "comment",
       kind: isDanceBreakLabel(c.label) ? "dance-break" : "chorus",
       label: `${c.label} (${uploader ? "ผู้อัปโหลดระบุ" : "คอมเมนต์ระบุ — โปรดตรวจสอบ"})`,
       confidence: uploader ? "high" : "medium",
@@ -25,6 +42,7 @@ export function chapterHighlights(description: string, comments: CommentInput[],
   const official = fromChapters(parseChapters(description, duration), true);
   // A full section list provides an end boundary; an isolated "1:02 chorus" does not.
   const lists = comments.map((c) => parseChapters(c.text, duration))
+    .filter((chapters) => chapters.every((c) => isSectionLabel(c.label)))
     .filter((chapters) => chapters.some((c) => c.explicitEnd && (isChorusLabel(c.label) || isDanceBreakLabel(c.label))) ||
       (chapters.length >= 2 && chapters.some((c) => isDanceBreakLabel(c.label))) ||
       (chapters.length >= 4 && chapters.filter((c) => isChorusLabel(c.label)).length >= 2));
@@ -61,7 +79,7 @@ function supportedDanceBreakRanges(comments: CommentInput[], duration: number): 
     const supporters = new Set(comments.filter((c) => parseTimestamps(c.text, duration)
       .some((stamp) => Math.abs(stamp - start) <= 2)).map((c) => normalizeLine(c.text)));
     if (supporters.size < 3 || out.some((s) => Math.min(s.end, end) > Math.max(s.start, start))) continue;
-    out.push({ start, end, kind: "dance-break", confidence: "medium",
+    out.push({ start, end, origin: "comment", kind: "dance-break", confidence: "medium",
       label: "เบรคแดนซ์ (คอมเมนต์ระบุ — โปรดตรวจสอบ)",
       evidence: `มีคอมเมนต์ระบุ dance break ใกล้จุดนี้ พร้อมช่วงเริ่ม–จบที่ระบุไว้และไทม์สแตมป์สนับสนุน ${supporters.size} ข้อความ ไม่ได้วิเคราะห์เสียงหรือภาพ`,
     });
@@ -71,8 +89,19 @@ function supportedDanceBreakRanges(comments: CommentInput[], duration: number): 
 
 /** Align by multiple explicitly labelled hook timestamps, never by arbitrary popular timestamps. */
 export function inferChorusOffset(occurrences: Occurrence[], texts: string[], duration: number): number | undefined {
-  const stamps = [...new Set(texts.flatMap((text) => text.split(/\r?\n/)
-    .filter(isChorusLabel).flatMap((line) => parseTimestamps(line, duration))))].sort((a, b) => a - b);
+  const stamps = [...new Set(texts.flatMap((text) => {
+    const chapters = parseChapters(text, duration);
+    const table = chapters.length >= 2 && chapters.every(c => isSectionLabel(c.label));
+    if (table) return chapters.filter(c => isChorusLabel(c.label)).map(c => c.start);
+    return text.split(/\r?\n/).flatMap(line => {
+      if (!isChorusLabel(line)) return [];
+      const times = parseTimestamps(line, duration);
+      // An isolated "1:02 chorus" can refer to its middle. Only an explicit
+      // start declaration or a labelled range provides an anchor on its own.
+      if (times.length === 1 && /\b(?:start|starts|beginning)\b/i.test(line)) return times;
+      return parseChapters(line, duration).filter(c => c.explicitEnd && isChorusLabel(c.label)).map(c => c.start);
+    });
+  }))].sort((a, b) => a - b);
   if (occurrences.length < 2 || stamps.length < 2 || stamps.length > 12) return undefined;
   const candidates: { offset: number; count: number; error: number }[] = [];
   for (const stamp of stamps) for (const occurrence of occurrences) {

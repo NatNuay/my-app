@@ -1,0 +1,21 @@
+{
+  "videoId": "aJ55DJE4Os4",
+  "title": "[Choreography Video] SEVENTEEN(세븐틴)-울고 싶지 않아(Don&#39;t Wanna Cry) Front Ver.",
+  "expectedOccurrence": {
+    "start": 58,
+    "end": 79
+  },
+  "referenceSource": "User supplied first chorus 0:58–1:19; audio has not been uploaded for this case.",
+  "observedWrongRange": {
+    "start": 132,
+    "end": 137
+  },
+  "comment": {
+    "text": "2:12-2:17 i love this part of the chorus",
+    "likes": 713
+  },
+  "commentSource": "Exact relevant timestamped line retrieved from YouTube Data API. The surrounding long reaction paragraph is deliberately omitted; it was not a section table.",
+  "featureFixture": "fast-chorus-aJ55DJE4Os4-features.npz",
+  "validationStatus": "Audio uploaded by user and decoded locally; measured first chorus 58.5–79.25 s against user reference 58–79 s. Other occurrences are not human-verified.",
+  "featureSource": "Derived chroma/timbre/energy/activity features only; no original audio samples or lyrics."
+}

@@ -35,8 +35,23 @@ const NO_HIGHLIGHT_REASON: Record<string, string> = {
   "untimed-lyrics": "พบเนื้อเพลงแล้ว แต่ไม่มีเวลาประกอบแต่ละบรรทัด จึงยังระบุช่วงฮุคอัตโนมัติไม่ได้",
   "alignment-required": "ยังไม่แสดงท่อนฮุค: ระบบยืนยันตำแหน่งเพลงในคลิปนี้ไม่ได้",
   "duration-mismatch": "ไม่แสดงท่อนฮุค: เพลงที่พบมีความยาวไม่ตรงกับคลิป (คลิปอาจมีอินโทรหรือตัดต่อ) จึงไม่เดาตำแหน่ง",
+  "fast-no-repeat": "โหมดเร็วไม่พบช่วงเสียงซ้ำที่มีหลักฐานเพียงพอ จึงยังไม่เสนอท่อนฮุค",
   "no-chorus": "ไม่แสดงท่อนฮุค: ไม่พบท่อนที่เนื้อเพลงวนซ้ำ",
   default: "ยังไม่พบท่อนฮุคอัตโนมัติของคลิปนี้",
+};
+
+const AUDIO_FAILURE_REASON: Record<string, string> = {
+  "worker-unreachable": "ติดต่อบริการวิเคราะห์เสียงไม่ได้ กรุณาตรวจว่าตัววิเคราะห์ใน Ubuntu ยังเปิดอยู่",
+  "worker-configuration": "การตั้งค่าบริการวิเคราะห์เสียงไม่ถูกต้อง",
+  "worker-auth": "บริการวิเคราะห์เสียงปฏิเสธการเชื่อมต่อ กรุณาตรวจการตั้งค่า",
+  "download-timeout": "ดึงเสียงจาก YouTube ไม่ทันเวลา กรุณาลองคลิปนี้อีกครั้ง",
+  "download-failed": "YouTube ไม่สามารถส่งไฟล์เสียงของคลิปนี้ให้ตัววิเคราะห์ได้",
+  "download-rejected": "ไฟล์เสียงของคลิปนี้ไม่ผ่านเงื่อนไขการดาวน์โหลด",
+  "decode-failed": "อ่านรูปแบบไฟล์เสียงของคลิปนี้ไม่สำเร็จ",
+  "decode-timeout": "การอ่านไฟล์เสียงใช้เวลานานเกินไป",
+  "dependency-missing": "ตัววิเคราะห์ขาดแพ็กเกจที่จำเป็น กรุณาดูข้อความใน Ubuntu",
+  "tool-missing": "ตัววิเคราะห์หาเครื่องมืออ่านเสียงไม่พบ กรุณาดูข้อความใน Ubuntu",
+  "analysis-failed": "ตัววิเคราะห์เกิดข้อผิดพลาดหลังรับเสียง กรุณาส่งข้อความผิดพลาดจาก Ubuntu",
 };
 
 // สิ่งที่เก็บในประวัติเบราว์เซอร์ต่อหนึ่งหน้า: คลิปที่เล่นอยู่ (null = หน้าหลักที่ยังไม่ได้เล่นอะไร) และ playlist ต้นทาง
@@ -243,16 +258,24 @@ export default function Page() {
                 </small>
               </>
             )}
-            {!source && mode === "single" && <small> {MODE_LABEL.single}</small>}
           </p>
           <YouTubePlayer
             videoId={current.id}
             onEnded={() => step(1, false)}
-            loopOne={mode === "single"}
+            loopOne={!!source && mode === "single"}
             highlights={auto.segments}
           />
-          {auto.status === "loading" && <small>กำลังวิเคราะห์ท่อนฮุคของคลิปนี้…</small>}
-          {auto.status === "none" && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
+          {["queued", "busy"].includes(auto.audioStatus ?? "") && <p><small>กำลังรอคิววิเคราะห์เสียง สามารถเล่นคลิปต่อได้…</small></p>}
+          {auto.audioStatus === "downloading" && <p><small>กำลังเตรียมเสียงของคลิปนี้…</small></p>}
+          {auto.audioStatus === "decoding" && <p><small>กำลังอ่านไฟล์เสียงของคลิปนี้…</small></p>}
+          {auto.audioStatus === "separating" && <p><small>กำลังแยกเสียงร้องและเครื่องดนตรี ขั้นตอนนี้ใช้ CPU มาก…</small></p>}
+          {auto.audioStatus === "features" && <p><small>กำลังเตรียมข้อมูลเสียงสำหรับวิเคราะห์…</small></p>}
+          {auto.audioStatus === "loading-model" && <p><small>กำลังโหลดโมเดลวิเคราะห์เสียง…</small></p>}
+          {auto.audioStatus === "analyzing" && <p><small>กำลังวิเคราะห์เสียงของคลิปนี้ สามารถเล่นคลิปต่อได้…</small></p>}
+          {auto.audioStatus === "timeout" && <p><small>วิเคราะห์เสียงใช้เวลานานเกินไป{auto.audioStage === "separating" ? "ในขั้นแยกเสียง" : ""} หยุดรอแล้วและใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
+          {auto.audioStatus === "failed" && <p><small>{AUDIO_FAILURE_REASON[auto.audioFailure ?? ""] ?? "วิเคราะห์เสียงของคลิปนี้ไม่ได้"} · ใช้ข้อมูลไฮไลท์จากระบบเดิม</small></p>}
+          {auto.status === "loading" && !["queued", "busy", "downloading", "decoding", "separating", "features", "loading-model", "analyzing"].includes(auto.audioStatus ?? "") && <small>กำลังค้นหาข้อมูลไฮไลท์ของคลิปนี้…</small>}
+          {auto.status === "none" && !["failed", "timeout"].includes(auto.audioStatus ?? "") && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
         </section>
       )}
